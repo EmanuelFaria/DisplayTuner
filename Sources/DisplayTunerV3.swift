@@ -1274,54 +1274,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let panelW: CGFloat = windowWidth - panelX - 15
         var y = windowHeight - 68
 
-        // White Point section
-        let wpHeader = makeLabel("White Point", x: panelX, y: y, width: 100)
-        wpHeader.font = NSFont.boldSystemFont(ofSize: 11)
-        cv.addSubview(wpHeader)
-
-        y -= 28
-        // Preset buttons
-        let presets: [(String, Double)] = [("D50", 5003), ("D55", 5503), ("D65", 6504), ("D75", 7504)]
-        var bx: CGFloat = panelX
-        for (label, kelvin) in presets {
-            let btn = NSButton(frame: NSRect(x: bx, y: y, width: 50, height: 24))
-            btn.title = label
-            btn.bezelStyle = .rounded
-            btn.font = NSFont.systemFont(ofSize: 10)
-            btn.tag = Int(kelvin)
-            btn.target = self
-            btn.action = #selector(whitePointPreset(_:))
-            cv.addSubview(btn)
-            bx += 54
-        }
-
-        // Kelvin slider
-        y -= 26
-        let kLabel = makeLabel("Kelvin:", x: panelX, y: y + 2, width: 48)
-        kLabel.font = NSFont.systemFont(ofSize: 10)
-        cv.addSubview(kLabel)
-
-        kelvinSlider = NSSlider(frame: NSRect(x: panelX + 50, y: y, width: panelW - 110, height: 20))
-        kelvinSlider.minValue = 3200
-        kelvinSlider.maxValue = 9300
-        kelvinSlider.doubleValue = 6500
-        kelvinSlider.isContinuous = true
-        kelvinSlider.target = self
-        kelvinSlider.action = #selector(kelvinSliderChanged(_:))
-        cv.addSubview(kelvinSlider)
-
-        kelvinLabel = makeLabel("6500K", x: panelX + panelW - 55, y: y + 2, width: 60)
-        kelvinLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        cv.addSubview(kelvinLabel)
-
-        // Separator line
-        y -= 16
-        let sep1 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep1.boxType = .separator
-        cv.addSubview(sep1)
-
-        // Eyedropper buttons
-        y -= 30
+        // --- 1. Eyedropper buttons (quick access at top) ---
         let pickBlack = makeActionButton("Pick Black", x: panelX, y: y, width: 90, action: #selector(pickBlackPoint(_:)))
         let pickWhite = makeActionButton("Pick White", x: panelX + 95, y: y, width: 90, action: #selector(pickWhitePoint(_:)))
         let pickGray = makeActionButton("Pick Gray", x: panelX + 190, y: y, width: 90, action: #selector(pickGrayPoint(_:)))
@@ -1329,61 +1282,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         cv.addSubview(pickWhite)
         cv.addSubview(pickGray)
 
-        // Separator
-        y -= 16
-        let sep2 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep2.boxType = .separator
-        cv.addSubview(sep2)
-
-        // Quick Adjust section
-        y -= 24
-        let quickHeader = makeLabel("Quick Adjust", x: panelX, y: y, width: 100)
-        quickHeader.font = NSFont.boldSystemFont(ofSize: 11)
-        cv.addSubview(quickHeader)
-
-        y -= 22
-        let brLabel = makeLabel("Brightness:", x: panelX, y: y, width: 70)
-        brLabel.font = NSFont.systemFont(ofSize: 10)
-        cv.addSubview(brLabel)
-        let brSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 1.5, target: self, action: #selector(quickBrightnessChanged(_:)))
-        brSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
-        cv.addSubview(brSlider)
-        quickBrightnessSlider = brSlider
-        quickBrightnessLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
-        quickBrightnessLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        cv.addSubview(quickBrightnessLabel)
-
-        y -= 22
-        let coLabel = makeLabel("Contrast:", x: panelX, y: y, width: 70)
-        coLabel.font = NSFont.systemFont(ofSize: 10)
-        cv.addSubview(coLabel)
-        let coSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 2.0, target: self, action: #selector(quickContrastChanged(_:)))
-        coSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
-        cv.addSubview(coSlider)
-        quickContrastSlider = coSlider
-        quickContrastLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
-        quickContrastLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        cv.addSubview(quickContrastLabel)
-
-        y -= 22
-        let dtLabel = makeLabel("Detail:", x: panelX, y: y, width: 70)
-        dtLabel.font = NSFont.systemFont(ofSize: 10)
-        cv.addSubview(dtLabel)
-        let dtSlider = NSSlider(value: 0.0, minValue: 0.0, maxValue: 1.0, target: self, action: #selector(quickDetailChanged(_:)))
-        dtSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
-        cv.addSubview(dtSlider)
-        quickDetailSlider = dtSlider
-        quickDetailLabel = makeLabel("0.00", x: panelX + panelW - 35, y: y, width: 35)
-        quickDetailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        cv.addSubview(quickDetailLabel)
-
-        // Separator
-        y -= 16
-        let sep3 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep3.boxType = .separator
-        cv.addSubview(sep3)
-
-        // Preview toggle
+        // --- 2. Preview ON/OFF + Undo/Redo ---
         y -= 32
         previewButton = NSButton(frame: NSRect(x: panelX, y: y, width: 130, height: 28))
         previewButton.title = "Preview OFF"
@@ -1392,15 +1291,13 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         previewButton.action = #selector(togglePreview(_:))
         cv.addSubview(previewButton)
 
-        // Undo / Redo
-        y -= 32
-        let undoBtn = makeActionButton("Undo", x: panelX, y: y, width: 80, action: #selector(undoAction(_:)))
-        let redoBtn = makeActionButton("Redo", x: panelX + 85, y: y, width: 80, action: #selector(redoAction(_:)))
+        let undoBtn = makeActionButton("Undo", x: panelX + 140, y: y, width: 70, action: #selector(undoAction(_:)))
+        let redoBtn = makeActionButton("Redo", x: panelX + 215, y: y, width: 70, action: #selector(redoAction(_:)))
         cv.addSubview(undoBtn)
         cv.addSubview(redoBtn)
 
-        // Enhanced precision checkbox
-        y -= 28
+        // --- 3. Enhanced Precision checkbox ---
+        y -= 26
         let ditheringCheck = NSButton(checkboxWithTitle: "Enhanced Precision", target: self,
                                        action: #selector(toggleDithering(_:)))
         ditheringCheck.frame = NSRect(x: panelX, y: y, width: 180, height: 20)
@@ -1410,14 +1307,14 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
         cv.addSubview(ditheringCheck)
 
-        // Separator
-        y -= 16
-        let sep4 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep4.boxType = .separator
-        cv.addSubview(sep4)
+        // --- Separator ---
+        y -= 14
+        let sep1 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep1.boxType = .separator
+        cv.addSubview(sep1)
 
-        // Preset dropdown
-        y -= 24
+        // --- 5. Preset dropdown ---
+        y -= 22
         let presetHeader = makeLabel("Preset", x: panelX, y: y, width: 60)
         presetHeader.font = NSFont.boldSystemFont(ofSize: 11)
         cv.addSubview(presetHeader)
@@ -1429,29 +1326,14 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         cv.addSubview(presetPopup)
         rebuildPresetDropdown()
 
-        // Action buttons
-        y -= 32
-        let resetBtn = makeActionButton("Reset All", x: panelX, y: y, width: 85, action: #selector(resetAll(_:)))
-        cv.addSubview(resetBtn)
+        // --- Separator ---
+        y -= 14
+        let sep2 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep2.boxType = .separator
+        cv.addSubview(sep2)
 
-        y -= 30
-        let exportICC = makeActionButton("Export ICC", x: panelX, y: y, width: 110, action: #selector(exportICCAction(_:)))
-        let exportCube = makeActionButton("Export .cube", x: panelX + 115, y: y, width: 110, action: #selector(exportCubeAction(_:)))
-        cv.addSubview(exportICC)
-        cv.addSubview(exportCube)
-
-        y -= 30
-        let testBtn = makeActionButton("Test Patterns", x: panelX, y: y, width: 130, action: #selector(showTestPatterns(_:)))
-        cv.addSubview(testBtn)
-
-        // Separator
-        y -= 16
-        let sep5 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep5.boxType = .separator
-        cv.addSubview(sep5)
-
-        // Cross-Display Calibration section
-        y -= 24
+        // --- 7. Cross-Display Calibration section ---
+        y -= 22
         let calHeader = makeLabel("Cross-Display Calibration", x: panelX, y: y, width: panelW)
         calHeader.font = NSFont.boldSystemFont(ofSize: 11)
         cv.addSubview(calHeader)
@@ -1493,19 +1375,103 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         colorMatchCountLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
         cv.addSubview(colorMatchCountLabel)
 
-        // Separator
+        // --- Separator ---
         y -= 14
-        let sep6 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
-        sep6.boxType = .separator
-        cv.addSubview(sep6)
+        let sep3 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep3.boxType = .separator
+        cv.addSubview(sep3)
 
-        // Target Gamma section
+        // --- 9. Quick Adjust sliders ---
         y -= 22
-        let gammaHeader = makeLabel("Target Gamma", x: panelX, y: y, width: 100)
-        gammaHeader.font = NSFont.boldSystemFont(ofSize: 11)
-        cv.addSubview(gammaHeader)
+        let quickHeader = makeLabel("Quick Adjust", x: panelX, y: y, width: 100)
+        quickHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(quickHeader)
 
-        y -= 24
+        y -= 22
+        let brLabel = makeLabel("Brightness:", x: panelX, y: y, width: 70)
+        brLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(brLabel)
+        let brSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 1.5, target: self, action: #selector(quickBrightnessChanged(_:)))
+        brSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(brSlider)
+        quickBrightnessSlider = brSlider
+        quickBrightnessLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickBrightnessLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickBrightnessLabel)
+
+        y -= 22
+        let coLabel = makeLabel("Contrast:", x: panelX, y: y, width: 70)
+        coLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(coLabel)
+        let coSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 2.0, target: self, action: #selector(quickContrastChanged(_:)))
+        coSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(coSlider)
+        quickContrastSlider = coSlider
+        quickContrastLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickContrastLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickContrastLabel)
+
+        y -= 22
+        let dtLabel = makeLabel("Detail:", x: panelX, y: y, width: 70)
+        dtLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(dtLabel)
+        let dtSlider = NSSlider(value: 0.0, minValue: 0.0, maxValue: 1.0, target: self, action: #selector(quickDetailChanged(_:)))
+        dtSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(dtSlider)
+        quickDetailSlider = dtSlider
+        quickDetailLabel = makeLabel("0.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickDetailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickDetailLabel)
+
+        // --- Separator ---
+        y -= 14
+        let sep4 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep4.boxType = .separator
+        cv.addSubview(sep4)
+
+        // --- 11. White Point section ---
+        y -= 22
+        let wpHeader = makeLabel("White Point", x: panelX, y: y, width: 100)
+        wpHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(wpHeader)
+
+        y -= 28
+        // D50/D55/D65/D75 preset buttons
+        let wpPresets: [(String, Double)] = [("D50", 5003), ("D55", 5503), ("D65", 6504), ("D75", 7504)]
+        var bx: CGFloat = panelX
+        for (label, kelvin) in wpPresets {
+            let btn = NSButton(frame: NSRect(x: bx, y: y, width: 50, height: 24))
+            btn.title = label
+            btn.bezelStyle = .rounded
+            btn.font = NSFont.systemFont(ofSize: 10)
+            btn.tag = Int(kelvin)
+            btn.target = self
+            btn.action = #selector(whitePointPreset(_:))
+            cv.addSubview(btn)
+            bx += 54
+        }
+
+        // Kelvin slider
+        y -= 26
+        let kLabel = makeLabel("Kelvin:", x: panelX, y: y + 2, width: 48)
+        kLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(kLabel)
+
+        kelvinSlider = NSSlider(frame: NSRect(x: panelX + 50, y: y, width: panelW - 110, height: 20))
+        kelvinSlider.minValue = 3200
+        kelvinSlider.maxValue = 9300
+        kelvinSlider.doubleValue = 6500
+        kelvinSlider.isContinuous = true
+        kelvinSlider.target = self
+        kelvinSlider.action = #selector(kelvinSliderChanged(_:))
+        cv.addSubview(kelvinSlider)
+
+        kelvinLabel = makeLabel("6500K", x: panelX + panelW - 55, y: y + 2, width: 60)
+        kelvinLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(kelvinLabel)
+
+        // --- 12. Target Gamma slider ---
+        y -= 26
         let gLabel = makeLabel("Gamma:", x: panelX, y: y + 2, width: 48)
         gLabel.font = NSFont.systemFont(ofSize: 10)
         cv.addSubview(gLabel)
@@ -1522,6 +1488,25 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         gammaLabel = makeLabel("2.20", x: panelX + panelW - 55, y: y + 2, width: 60)
         gammaLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         cv.addSubview(gammaLabel)
+
+        // --- Separator ---
+        y -= 14
+        let sep5 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep5.boxType = .separator
+        cv.addSubview(sep5)
+
+        // --- 14. Action buttons at the very bottom ---
+        y -= 30
+        let resetBtn = makeActionButton("Reset All", x: panelX, y: y, width: 85, action: #selector(resetAll(_:)))
+        let exportICC = makeActionButton("Export ICC", x: panelX + 90, y: y, width: 100, action: #selector(exportICCAction(_:)))
+        cv.addSubview(resetBtn)
+        cv.addSubview(exportICC)
+
+        y -= 30
+        let exportCube = makeActionButton("Export .cube", x: panelX, y: y, width: 110, action: #selector(exportCubeAction(_:)))
+        let testBtn = makeActionButton("Test Patterns", x: panelX + 115, y: y, width: 130, action: #selector(showTestPatterns(_:)))
+        cv.addSubview(exportCube)
+        cv.addSubview(testBtn)
     }
 
     func buildTonalSlidersForChannel(_ ch: CurveChannel) {
