@@ -1116,6 +1116,17 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var gammaSlider: NSSlider!
     var gammaLabel: NSTextField!
 
+    // Quick Adjust sliders
+    var quickBrightnessSlider: NSSlider!
+    var quickBrightnessLabel: NSTextField!
+    var quickContrastSlider: NSSlider!
+    var quickContrastLabel: NSTextField!
+    var quickDetailSlider: NSSlider!
+    var quickDetailLabel: NSTextField!
+    var quickBrightness: Double = 1.0
+    var quickContrast: Double = 1.0
+    var quickDetail: Double = 0.0
+
     // Preset Dropdown (replaces Save/Load buttons)
     var presetPopup: NSPopUpButton!
 
@@ -1324,17 +1335,47 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         sep2.boxType = .separator
         cv.addSubview(sep2)
 
-        // Sharpening section (stubbed)
+        // Quick Adjust section
         y -= 24
-        let sharpHeader = makeLabel("Sharpening", x: panelX, y: y, width: 100)
-        sharpHeader.font = NSFont.boldSystemFont(ofSize: 11)
-        cv.addSubview(sharpHeader)
+        let quickHeader = makeLabel("Quick Adjust", x: panelX, y: y, width: 100)
+        quickHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(quickHeader)
 
-        y -= 18
-        let stubLabel = makeLabel("Coming Soon", x: panelX, y: y, width: panelW)
-        stubLabel.font = NSFont.systemFont(ofSize: 9)
-        stubLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
-        cv.addSubview(stubLabel)
+        y -= 22
+        let brLabel = makeLabel("Brightness:", x: panelX, y: y, width: 70)
+        brLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(brLabel)
+        let brSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 1.5, target: self, action: #selector(quickBrightnessChanged(_:)))
+        brSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(brSlider)
+        quickBrightnessSlider = brSlider
+        quickBrightnessLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickBrightnessLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickBrightnessLabel)
+
+        y -= 22
+        let coLabel = makeLabel("Contrast:", x: panelX, y: y, width: 70)
+        coLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(coLabel)
+        let coSlider = NSSlider(value: 1.0, minValue: 0.5, maxValue: 2.0, target: self, action: #selector(quickContrastChanged(_:)))
+        coSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(coSlider)
+        quickContrastSlider = coSlider
+        quickContrastLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickContrastLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickContrastLabel)
+
+        y -= 22
+        let dtLabel = makeLabel("Detail:", x: panelX, y: y, width: 70)
+        dtLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(dtLabel)
+        let dtSlider = NSSlider(value: 0.0, minValue: 0.0, maxValue: 1.0, target: self, action: #selector(quickDetailChanged(_:)))
+        dtSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(dtSlider)
+        quickDetailSlider = dtSlider
+        quickDetailLabel = makeLabel("0.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickDetailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickDetailLabel)
 
         // Separator
         y -= 16
@@ -2047,12 +2088,27 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 if b > 0 { b = pow(b, gammaExp) }
             }
 
-            // Step 7: Clamp 0-1
+            // Step 7: Quick brightness (gamma shift)
+            if abs(quickBrightness - 1.0) > 0.001 {
+                let brGamma = CGFloat(1.0 / quickBrightness)
+                if r > 0 { r = pow(r, brGamma) }
+                if g > 0 { g = pow(g, brGamma) }
+                if b > 0 { b = pow(b, brGamma) }
+            }
+
+            // Step 8: Quick contrast (S-curve)
+            if abs(quickContrast - 1.0) > 0.001 {
+                r = max(0, min(1, 0.5 + (r - 0.5) * CGFloat(quickContrast)))
+                g = max(0, min(1, 0.5 + (g - 0.5) * CGFloat(quickContrast)))
+                b = max(0, min(1, 0.5 + (b - 0.5) * CGFloat(quickContrast)))
+            }
+
+            // Step 9: Clamp 0-1
             r = max(0, min(1, r))
             g = max(0, min(1, g))
             b = max(0, min(1, b))
 
-            // Step 8: Safety clamp min 0.03 for indices > 0
+            // Step 10: Safety clamp min 0.03 for indices > 0
             if i > 0 {
                 r = max(0.03, r)
                 g = max(0.03, g)
@@ -2062,6 +2118,37 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             rTable[i] = Float(r)
             gTable[i] = Float(g)
             bTable[i] = Float(b)
+        }
+
+        // Step 11: Quick detail (unsharp mask on LUT — post-loop)
+        if quickDetail > 0.001 {
+            func boxBlur(_ lut: [Float], radius: Int) -> [Float] {
+                var result = [Float](repeating: 0, count: lut.count)
+                for i in 0..<lut.count {
+                    var sum: Float = 0
+                    var count: Float = 0
+                    for j in max(0, i - radius)...min(lut.count - 1, i + radius) {
+                        sum += lut[j]
+                        count += 1
+                    }
+                    result[i] = sum / count
+                }
+                return result
+            }
+            let blurR = boxBlur(rTable, radius: 18)
+            let blurG = boxBlur(gTable, radius: 18)
+            let blurB = boxBlur(bTable, radius: 18)
+            let strength = Float(quickDetail) * 8.0
+            for i in 0..<256 {
+                rTable[i] = max(0, min(1, rTable[i] + strength * (rTable[i] - blurR[i])))
+                gTable[i] = max(0, min(1, gTable[i] + strength * (gTable[i] - blurG[i])))
+                bTable[i] = max(0, min(1, bTable[i] + strength * (bTable[i] - blurB[i])))
+                if i > 0 {
+                    rTable[i] = max(0.03, rTable[i])
+                    gTable[i] = max(0.03, gTable[i])
+                    bTable[i] = max(0.03, bTable[i])
+                }
+            }
         }
 
         return (rTable, gTable, bTable)
@@ -2595,6 +2682,27 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         targetGamma = sender.doubleValue
         gammaLabel.stringValue = String(format: "%.2f", targetGamma)
         pushUndoState()
+        applyLUTIfPreviewOn()
+    }
+
+    @objc func quickBrightnessChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        quickBrightness = sender.doubleValue
+        quickBrightnessLabel.stringValue = String(format: "%.2f", quickBrightness)
+        applyLUTIfPreviewOn()
+    }
+
+    @objc func quickContrastChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        quickContrast = sender.doubleValue
+        quickContrastLabel.stringValue = String(format: "%.2f", quickContrast)
+        applyLUTIfPreviewOn()
+    }
+
+    @objc func quickDetailChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        quickDetail = sender.doubleValue
+        quickDetailLabel.stringValue = String(format: "%.2f", quickDetail)
         applyLUTIfPreviewOn()
     }
 

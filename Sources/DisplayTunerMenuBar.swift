@@ -322,9 +322,8 @@ func getOnlineDisplays() -> [DisplayInfo] {
         let w = CGDisplayPixelsWide(did)
         let h = CGDisplayPixelsHigh(did)
         let isMain = CGDisplayIsMain(did) != 0
-        var name = "\(w)x\(h)"
-        if w == 2560 && h == 1600 { name = "Cinema HD \(w)x\(h)" }
-        if isMain && !(w == 2560 && h == 1600) { name += " (Main)" }
+        // Use resolution-only name for preset matching (must match file prefix format)
+        let name = "\(w)x\(h)"
         results.append(DisplayInfo(id: did, name: name, width: w, height: h, isMain: isMain))
     }
     return results
@@ -867,14 +866,15 @@ class MenuBarController: NSObject {
         // Step 4: Apply detail (pseudo-sharpness) — unsharp-mask-like LUT enhancement
         // output = input + detail * (input - blurred_input) using 5-sample box blur of LUT
         if detail > 0.001 {
-            let blurR = boxBlurLUT(baseLUT_R, radius: 2)
-            let blurG = boxBlurLUT(baseLUT_G, radius: 2)
-            let blurB = boxBlurLUT(baseLUT_B, radius: 2)
+            let blurR = boxBlurLUT(baseLUT_R, radius: 18)
+            let blurG = boxBlurLUT(baseLUT_G, radius: 18)
+            let blurB = boxBlurLUT(baseLUT_B, radius: 18)
+            let strength = CGFloat(detail) * 8.0  // amplify effect
 
             for i in 0..<256 {
-                baseLUT_R[i] = baseLUT_R[i] + CGFloat(detail) * (baseLUT_R[i] - blurR[i])
-                baseLUT_G[i] = baseLUT_G[i] + CGFloat(detail) * (baseLUT_G[i] - blurG[i])
-                baseLUT_B[i] = baseLUT_B[i] + CGFloat(detail) * (baseLUT_B[i] - blurB[i])
+                baseLUT_R[i] = baseLUT_R[i] + strength * (baseLUT_R[i] - blurR[i])
+                baseLUT_G[i] = baseLUT_G[i] + strength * (baseLUT_G[i] - blurG[i])
+                baseLUT_B[i] = baseLUT_B[i] + strength * (baseLUT_B[i] - blurB[i])
             }
         }
 
