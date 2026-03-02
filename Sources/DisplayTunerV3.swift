@@ -5,6 +5,7 @@
 import AppKit
 import CoreGraphics
 import CoreImage
+import ScreenCaptureKit
 import QuartzCore
 import Foundation
 
@@ -2105,36 +2106,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             bTable[i] = Float(b)
         }
 
-        // Step 11: Quick detail (unsharp mask on LUT — post-loop)
-        if quickDetail > 0.001 {
-            func boxBlur(_ lut: [Float], radius: Int) -> [Float] {
-                var result = [Float](repeating: 0, count: lut.count)
-                for i in 0..<lut.count {
-                    var sum: Float = 0
-                    var count: Float = 0
-                    for j in max(0, i - radius)...min(lut.count - 1, i + radius) {
-                        sum += lut[j]
-                        count += 1
-                    }
-                    result[i] = sum / count
-                }
-                return result
-            }
-            let blurR = boxBlur(rTable, radius: 18)
-            let blurG = boxBlur(gTable, radius: 18)
-            let blurB = boxBlur(bTable, radius: 18)
-            let strength = Float(quickDetail) * 8.0
-            for i in 0..<256 {
-                rTable[i] = max(0, min(1, rTable[i] + strength * (rTable[i] - blurR[i])))
-                gTable[i] = max(0, min(1, gTable[i] + strength * (gTable[i] - blurG[i])))
-                bTable[i] = max(0, min(1, bTable[i] + strength * (bTable[i] - blurB[i])))
-                if i > 0 {
-                    rTable[i] = max(0.03, rTable[i])
-                    gTable[i] = max(0.03, gTable[i])
-                    bTable[i] = max(0.03, bTable[i])
-                }
-            }
-        }
+        // Sharpening is handled by the screen-capture overlay, not the LUT pipeline
 
         return (rTable, gTable, bTable)
     }
@@ -2685,10 +2657,117 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     @objc func quickDetailChanged(_ sender: NSSlider) {
-        userHasInteracted = true
         quickDetail = sender.doubleValue
         quickDetailLabel.stringValue = String(format: "%.2f", quickDetail)
-        applyLUTIfPreviewOn()
+        if quickDetail > 0.001 {
+            startSharpeningOverlay()
+        } else {
+            stopSharpeningOverlay()
+        }
+    }
+
+    // MARK: - Screen-Capture Sharpening Overlay
+
+    var sharpenWindow: NSWindow?
+    var sharpenTimer: Timer?
+    var sharpenImageView: NSImageView?
+
+    func startSharpeningOverlay() {
+        guard targetDisplayID != 0 || !displayIDs.isEmpty else { return }
+        let did = targetDisplayID != 0 ? targetDisplayID : selectedDisplayID
+
+        // Find the screen for this display
+        guard let screen = screenForDisplay(did) else { return }
+        let frame = screen.frame
+
+        if sharpenWindow == nil {
+            // Create overlay window covering the target display
+            sharpenWindow = NSWindow(contentRect: frame,
+                                     styleMask: .borderless,
+                                     backing: .buffered, defer: false)
+            sharpenWindow?.level = .screenSaver  // above everything
+            sharpenWindow?.isOpaque = false
+            sharpenWindow?.backgroundColor = .clear
+            sharpenWindow?.ignoresMouseEvents = true  // click-through
+            sharpenWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+            let iv = NSImageView(frame: NSRect(origin: .zero, size: frame.size))
+            iv.imageScaling = .scaleAxesIndependently
+            iv.autoresizingMask = [.width, .height]
+            sharpenWindow?.contentView?.addSubview(iv)
+            sharpenImageView = iv
+        }
+
+        sharpenWindow?.setFrame(frame, display: false)
+        sharpenWindow?.orderFront(nil)
+
+        // Start refresh timer
+        sharpenTimer?.invalidate()
+        sharpenTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
+            self?.captureSharpenAndDisplay()
+        }
+    }
+
+    func stopSharpeningOverlay() {
+        sharpenTimer?.invalidate()
+        sharpenTimer = nil
+        sharpenWindow?.orderOut(nil)
+    }
+
+    func screenForDisplay(_ displayID: CGDirectDisplayID) -> NSScreen? {
+        for screen in NSScreen.screens {
+            if let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
+                if screenNumber == displayID { return screen }
+            }
+        }
+        return NSScreen.screens.first
+    }
+
+    let sharpenContext = CIContext()
+    var scStream: SCStream?
+
+    func captureSharpenAndDisplay() {
+        let did = targetDisplayID != 0 ? targetDisplayID : selectedDisplayID
+        guard let screen = screenForDisplay(did) else { return }
+
+        // Use ScreenCaptureKit for single-frame capture
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
+            guard let self = self, let content = content else { return }
+
+            // Find the display matching our target
+            guard let scDisplay = content.displays.first(where: { $0.displayID == did }) ?? content.displays.first else { return }
+
+            let filter = SCContentFilter(display: scDisplay, excludingWindows: [])
+            let config = SCStreamConfiguration()
+            config.width = scDisplay.width
+            config.height = scDisplay.height
+            config.pixelFormat = kCVPixelFormatType_32BGRA
+            config.showsCursor = false
+
+            // Single screenshot
+            if #available(macOS 14.0, *) {
+                SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { [weak self] cgImage, error in
+                    guard let self = self, let cgImage = cgImage else { return }
+                    self.applySharpenFilter(to: cgImage)
+                }
+            }
+        }
+    }
+
+    func applySharpenFilter(to cgImage: CGImage) {
+        let ciImage = CIImage(cgImage: cgImage)
+        let filter = CIFilter(name: "CIUnsharpMask")!
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(quickDetail * 5.0, forKey: kCIInputIntensityKey)
+        filter.setValue(quickDetail * 3.0 + 0.5, forKey: kCIInputRadiusKey)
+
+        guard let outputImage = filter.outputImage else { return }
+        guard let sharpCG = sharpenContext.createCGImage(outputImage, from: ciImage.extent) else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.sharpenImageView?.image = NSImage(cgImage: sharpCG,
+                                                     size: NSSize(width: cgImage.width, height: cgImage.height))
+        }
     }
 
     // MARK: - Reset
@@ -2736,6 +2815,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         gammaLabel.stringValue = "2.20"
 
         stopDithering()
+        stopSharpeningOverlay()
         CGDisplayRestoreColorSyncSettings()
 
         undoStack.removeAll()
@@ -3163,6 +3243,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
     @objc func quitFromStatusBar(_ sender: Any?) {
         stopDithering()
+        stopSharpeningOverlay()
         CGDisplayRestoreColorSyncSettings()
         warmUpTimer?.invalidate()
         NSApp.terminate(nil)

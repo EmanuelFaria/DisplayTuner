@@ -12,6 +12,7 @@ swiftc -O \
     -framework AppKit \
     -framework CoreImage \
     -framework QuartzCore \
+    -framework ScreenCaptureKit \
     2>&1
 
 if [[ $? -eq 0 ]]; then
