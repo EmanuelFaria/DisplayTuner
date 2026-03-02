@@ -2917,18 +2917,13 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     @objc func quickDetailChanged(_ sender: NSSlider) {
-        // Screen-capture sharpening requires code signing and proper entitlements.
-        // For an unsigned app, ScreenCaptureKit triggers an infinite permission loop.
-        // Reset slider and inform user.
-        sender.doubleValue = 0
-        quickDetail = 0
-        quickDetailLabel.stringValue = "N/A"
-
-        let alert = NSAlert()
-        alert.messageText = "Sharpening Not Available"
-        alert.informativeText = "Screen-capture sharpening requires DisplayTuner to be code-signed with proper entitlements. This will be available in a future signed release.\n\nFor now, you can improve perceived sharpness by:\n- Using BetterDisplay's resolution scaling (renders at higher res)\n- Increasing contrast in the midtones via the curves or EQ"
-        alert.alertStyle = .informational
-        alert.runModal()
+        quickDetail = sender.doubleValue
+        quickDetailLabel.stringValue = String(format: "%.2f", quickDetail)
+        if quickDetail > 0.001 {
+            startSharpeningOverlay()
+        } else {
+            stopSharpeningOverlay()
+        }
     }
 
     // MARK: - Screen-Capture Sharpening Overlay
