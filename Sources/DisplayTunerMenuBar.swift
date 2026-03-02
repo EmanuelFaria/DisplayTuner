@@ -527,17 +527,21 @@ class MenuBarController: NSObject {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Open DisplayTuner
-        let openItem = NSMenuItem(title: "Open DisplayTuner", action: #selector(openDisplayTuner(_:)), keyEquivalent: "")
-        openItem.target = self
-        menu.addItem(openItem)
+        // Show/Hide DisplayTuner Window
+        let showItem = NSMenuItem(title: "Show DisplayTuner", action: #selector(openDisplayTuner(_:)), keyEquivalent: "")
+        showItem.target = self
+        menu.addItem(showItem)
+
+        let hideItem = NSMenuItem(title: "Hide DisplayTuner", action: #selector(hideDisplayTuner(_:)), keyEquivalent: "")
+        hideItem.target = self
+        menu.addItem(hideItem)
+
+        menu.addItem(NSMenuItem.separator())
 
         // Reset Display
         let resetItem = NSMenuItem(title: "Reset Display", action: #selector(resetDisplay(_:)), keyEquivalent: "")
         resetItem.target = self
         menu.addItem(resetItem)
-
-        menu.addItem(NSMenuItem.separator())
 
         // Quit
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp(_:)), keyEquivalent: "q")
@@ -663,23 +667,34 @@ class MenuBarController: NSObject {
     }
 
     @objc func openDisplayTuner(_ sender: Any?) {
-        // Try to find DisplayTuner binary next to ourselves
+        // First try to activate if already running
+        let runningApps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "DisplayTuner" || $0.bundleIdentifier == "com.emanuelarruda.displaytuner" }
+        if let app = runningApps.first {
+            app.activate()
+            return
+        }
+        // Try the .app bundle first
+        let appPath = NSString(string: "~/Applications/DisplayTuner.app").expandingTildeInPath
+        if FileManager.default.fileExists(atPath: appPath) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: appPath))
+            return
+        }
+        // Fallback to binary
         let myPath = CommandLine.arguments[0]
         let myDir = (myPath as NSString).deletingLastPathComponent
         let tunerPath = (myDir as NSString).appendingPathComponent("DisplayTuner")
-        let fm = FileManager.default
-        if fm.isExecutableFile(atPath: tunerPath) {
+        if FileManager.default.isExecutableFile(atPath: tunerPath) {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: tunerPath)
             try? proc.run()
-        } else {
-            // Try same directory as the source
-            let altPath = NSString(string: "~/github/DisplayTuner/DisplayTuner").expandingTildeInPath
-            if fm.isExecutableFile(atPath: altPath) {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: altPath)
-                try? proc.run()
-            }
+        }
+    }
+
+    @objc func hideDisplayTuner(_ sender: Any?) {
+        // Tell the running DisplayTuner to hide its window
+        let runningApps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "DisplayTuner" || $0.bundleIdentifier == "com.emanuelarruda.displaytuner" }
+        if let app = runningApps.first {
+            app.hide()
         }
     }
 

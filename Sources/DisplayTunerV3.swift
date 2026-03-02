@@ -3271,33 +3271,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     // MARK: - Status Bar Icon
 
     func setupStatusBarItem() {
-        statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusBarItem?.button {
-            if let img = NSImage(systemSymbolName: "display", accessibilityDescription: "DisplayTuner") {
-                img.isTemplate = true
-                button.image = img
-            } else {
-                button.title = "\u{1F5A5}"
-            }
-        }
-
-        let sbMenu = NSMenu()
-
-        let showItem = NSMenuItem(title: "Show Window", action: #selector(showMainWindow(_:)), keyEquivalent: "")
-        showItem.target = self
-        sbMenu.addItem(showItem)
-
-        let hideItem = NSMenuItem(title: "Hide Window", action: #selector(hideMainWindow(_:)), keyEquivalent: "")
-        hideItem.target = self
-        sbMenu.addItem(hideItem)
-
-        sbMenu.addItem(NSMenuItem.separator())
-
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitFromStatusBar(_:)), keyEquivalent: "q")
-        quitItem.target = self
-        sbMenu.addItem(quitItem)
-
-        statusBarItem?.menu = sbMenu
+        // Status bar is handled by the DisplayTunerMenuBar daemon
+        // No separate icon from the main app
     }
 
     @objc func showMainWindow(_ sender: Any?) {
