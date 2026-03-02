@@ -1735,6 +1735,10 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         saveItem.target = self
         presetPopup.menu?.addItem(saveItem)
 
+        let browseItem = NSMenuItem(title: "Browse...", action: #selector(browsePreset(_:)), keyEquivalent: "")
+        browseItem.target = self
+        presetPopup.menu?.addItem(browseItem)
+
         let openFolderItem = NSMenuItem(title: "Open Presets Folder...", action: #selector(openPresetsFolder(_:)), keyEquivalent: "")
         openFolderItem.target = self
         presetPopup.menu?.addItem(openFolderItem)
@@ -1759,9 +1763,13 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             saveAsNewPreset(sender)
             return
         }
+        if title == "Browse..." {
+            browsePreset(sender)
+            rebuildPresetDropdown()
+            return
+        }
         if title == "Open Presets Folder..." {
             openPresetsFolder(sender)
-            // Re-select previous item
             rebuildPresetDropdown()
             return
         }
@@ -1801,8 +1809,71 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         PresetManager.setLastSettingName(title, forDisplay: displayName)
 
         self.userHasInteracted = true
+        // Force preview ON and apply — loading a preset should always take effect
+        if !previewOn {
+            previewOn = true
+            previewButton.title = "Preview ON"
+            liveIndicator.stringValue = "LIVE"
+            liveIndicator.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
+        }
         self.pushUndoState()
-        self.applyLUTIfPreviewOn()
+        self.applyLUT()
+    }
+
+    @objc func browsePreset(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.directoryURL = URL(fileURLWithPath: NSString(string: "~/.config/displayctl/presets").expandingTildeInPath)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Load Preset"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        guard let data = try? Data(contentsOf: url),
+              let preset = try? JSONDecoder().decode(PresetData.self, from: data) else {
+            let alert = NSAlert()
+            alert.messageText = "Failed to load preset"
+            alert.informativeText = "The file could not be parsed as a DisplayTuner preset."
+            alert.runModal()
+            return
+        }
+
+        self.curves = preset.curves
+        self.tonalBands = preset.tonalEQ.bands
+        self.whitePointKelvin = preset.whitePointKelvin
+        self.targetGamma = preset.targetGamma ?? 2.2
+
+        self.refreshCurveView()
+        self.kelvinSlider.doubleValue = self.whitePointKelvin
+        self.kelvinLabel.stringValue = String(format: "%.0fK", self.whitePointKelvin)
+        self.gammaSlider.doubleValue = self.targetGamma
+        self.gammaLabel.stringValue = String(format: "%.2f", self.targetGamma)
+
+        for ch in CurveChannel.allCases {
+            if let sliders = self.tonalEQSliders[ch.rawValue],
+               let bands = self.tonalBands[ch.rawValue] {
+                for (i, slider) in sliders.enumerated() where i < bands.count {
+                    slider.doubleValue = bands[i]
+                }
+            }
+            if let labels = self.tonalEQLabels[ch.rawValue],
+               let bands = self.tonalBands[ch.rawValue] {
+                for (i, label) in labels.enumerated() where i < bands.count {
+                    label.stringValue = String(format: "%.2f", bands[i])
+                }
+            }
+        }
+
+        self.userHasInteracted = true
+        if !previewOn {
+            previewOn = true
+            previewButton.title = "Preview ON"
+            liveIndicator.stringValue = "LIVE"
+            liveIndicator.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
+        }
+        self.pushUndoState()
+        self.applyLUT()
     }
 
     @objc func saveAsNewPreset(_ sender: Any?) {
