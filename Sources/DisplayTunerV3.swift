@@ -845,6 +845,7 @@ class TestPatternController: NSObject, NSWindowDelegate {
     var windows: [NSWindow] = []
     var patternViews: [TestPatternView] = []
     var currentPatternType: TestPatternView.PatternType = .grayscale
+    weak var mainController: DisplayTunerController?
 
     func showWindow() {
         if !windows.isEmpty {
@@ -892,13 +893,36 @@ class TestPatternController: NSObject, NSWindowDelegate {
         selector.action = #selector(patternChanged(_:))
         toolbar.addSubview(selector)
 
-        let fsButton = NSButton(frame: NSRect(x: 220, y: 7, width: 120, height: 26))
-        fsButton.title = "Full Screen (F)"
+        let fsButton = NSButton(frame: NSRect(x: 220, y: 7, width: 100, height: 26))
+        fsButton.title = "Full Screen"
         fsButton.bezelStyle = .rounded
         fsButton.tag = index
         fsButton.target = self
         fsButton.action = #selector(toggleFullScreen(_:))
         toolbar.addSubview(fsButton)
+
+        // Match Color button (accessible even in full-screen)
+        let matchBtn = NSButton(frame: NSRect(x: 340, y: 7, width: 110, height: 26))
+        matchBtn.title = "Match Color"
+        matchBtn.bezelStyle = .rounded
+        matchBtn.target = mainController
+        matchBtn.action = #selector(DisplayTunerController.matchColorAction(_:))
+        toolbar.addSubview(matchBtn)
+
+        // Quick Match button
+        let quickBtn = NSButton(frame: NSRect(x: 460, y: 7, width: 100, height: 26))
+        quickBtn.title = "Quick Match"
+        quickBtn.bezelStyle = .rounded
+        quickBtn.target = mainController
+        quickBtn.action = #selector(DisplayTunerController.quickMatchAction(_:))
+        toolbar.addSubview(quickBtn)
+
+        // Status label for color matching feedback
+        let statusLabel = NSTextField(labelWithString: "")
+        statusLabel.frame = NSRect(x: 570, y: 10, width: 400, height: 18)
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = NSColor(calibratedWhite: 0.7, alpha: 1.0)
+        toolbar.addSubview(statusLabel)
 
         cv.addSubview(toolbar)
 
@@ -1002,6 +1026,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var colorMatchCountLabel: NSTextField!
     var colorMatchStep: Int = 0  // 0=idle, 1=waiting for source pick, 2=waiting for target pick
     var pendingSourceColor: NSColor?
+    var activeSampler: NSColorSampler?  // retained to prevent ARC deallocation
     var matchColorButton: NSButton!
     var quickMatchButton: NSButton!
     var doneMatchingButton: NSButton!
@@ -2083,7 +2108,9 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             doneMatchingButton.isEnabled = true
             matchColorButton.isEnabled = false
 
+            // Step 1: Pick source color on TARGET display
             let sampler = NSColorSampler()
+            self.activeSampler = sampler  // retain to prevent ARC deallocation
             sampler.show { [weak self] selectedColor in
                 guard let self = self else { return }
                 guard let color = selectedColor else {
@@ -2091,49 +2118,55 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                     self.colorMatchStatusLabel.stringValue = "Cancelled."
                     self.colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
                     self.matchColorButton.isEnabled = true
+                    self.activeSampler = nil
                     return
                 }
                 let rgb = color.usingColorSpace(.sRGB) ?? color
                 self.pendingSourceColor = rgb
                 self.colorMatchStep = 2
-                self.colorMatchStatusLabel.stringValue = "Step 2: Pick the SAME color on the REFERENCE display..."
+                self.colorMatchStatusLabel.stringValue = "Step 2: Now click the SAME color on the REFERENCE display..."
                 self.colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.3, green: 0.8, blue: 1.0, alpha: 1.0)
 
-                let sampler2 = NSColorSampler()
-                sampler2.show { [weak self] selectedColor2 in
-                    guard let self = self else { return }
-                    guard let color2 = selectedColor2, let srcColor = self.pendingSourceColor else {
+                // Step 2: Pick target color on REFERENCE display — delay slightly to let UI update
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    let sampler2 = NSColorSampler()
+                    self.activeSampler = sampler2  // retain sampler2
+                    sampler2.show { [weak self] selectedColor2 in
+                        guard let self = self else { return }
+                        self.activeSampler = nil
+                        guard let color2 = selectedColor2, let srcColor = self.pendingSourceColor else {
+                            self.colorMatchStep = 0
+                            self.colorMatchStatusLabel.stringValue = "Cancelled."
+                            self.colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+                            self.matchColorButton.isEnabled = true
+                            return
+                        }
+                        let tgtRGB = color2.usingColorSpace(.sRGB) ?? color2
+
+                        // Record the pair
+                        self.colorMatchPairs.append((source: srcColor, target: tgtRGB))
+
+                        // Apply curve points from this match
+                        self.applyCurvePointsFromColorMatch(source: srcColor, target: tgtRGB)
+
+                        let srcR = String(format: "%.2f", srcColor.redComponent)
+                        let srcG = String(format: "%.2f", srcColor.greenComponent)
+                        let srcB = String(format: "%.2f", srcColor.blueComponent)
+                        let tgtR = String(format: "%.2f", tgtRGB.redComponent)
+                        let tgtG = String(format: "%.2f", tgtRGB.greenComponent)
+                        let tgtB = String(format: "%.2f", tgtRGB.blueComponent)
+
+                        self.colorMatchStatusLabel.stringValue = "Matched R(\(srcR)>\(tgtR)) G(\(srcG)>\(tgtG)) B(\(srcB)>\(tgtB))"
+                        self.colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
+                        self.colorMatchCountLabel.stringValue = "Pairs: \(self.colorMatchPairs.count)"
                         self.colorMatchStep = 0
-                        self.colorMatchStatusLabel.stringValue = "Cancelled."
-                        self.colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
                         self.matchColorButton.isEnabled = true
-                        return
+
+                        self.userHasInteracted = true
+                        self.refreshCurveView()
+                        self.pushUndoState()
+                        self.applyLUTIfPreviewOn()
                     }
-                    let tgtRGB = color2.usingColorSpace(.sRGB) ?? color2
-
-                    // Record the pair
-                    self.colorMatchPairs.append((source: srcColor, target: tgtRGB))
-
-                    // Apply curve points from this match
-                    self.applyCurvePointsFromColorMatch(source: srcColor, target: tgtRGB)
-
-                    let srcR = String(format: "%.2f", srcColor.redComponent)
-                    let srcG = String(format: "%.2f", srcColor.greenComponent)
-                    let srcB = String(format: "%.2f", srcColor.blueComponent)
-                    let tgtR = String(format: "%.2f", tgtRGB.redComponent)
-                    let tgtG = String(format: "%.2f", tgtRGB.greenComponent)
-                    let tgtB = String(format: "%.2f", tgtRGB.blueComponent)
-
-                    self.colorMatchStatusLabel.stringValue = "Mapped: R(\(srcR)->\(tgtR)) G(\(srcG)->\(tgtG)) B(\(srcB)->\(tgtB)). Pick another or Done."
-                    self.colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
-                    self.colorMatchCountLabel.stringValue = "Pairs matched: \(self.colorMatchPairs.count)"
-                    self.colorMatchStep = 0
-                    self.matchColorButton.isEnabled = true
-
-                    self.userHasInteracted = true
-                    self.refreshCurveView()
-                    self.pushUndoState()
-                    self.applyLUTIfPreviewOn()
                 }
             }
         }
@@ -2755,6 +2788,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     // MARK: - Test Patterns
 
     @objc func showTestPatterns(_ sender: Any?) {
+        testPatternController.mainController = self
         testPatternController.showWindow()
     }
 
