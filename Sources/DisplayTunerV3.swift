@@ -63,6 +63,7 @@ struct PresetData: Codable {
     var tonalEQ: TonalEQState
     var whitePointKelvin: Double
     var previewOn: Bool
+    var targetGamma: Double?
 
     init() {
         curves = [:]
@@ -72,6 +73,7 @@ struct PresetData: Codable {
         tonalEQ = TonalEQState()
         whitePointKelvin = 6500
         previewOn = true
+        targetGamma = 2.2
     }
 }
 
@@ -79,6 +81,7 @@ struct UndoState {
     var curves: [Int: [CurvePoint]]
     var tonalBands: [Int: [Double]]
     var whitePointKelvin: Double
+    var targetGamma: Double
 }
 
 // MARK: - Color Math: CIE Lab conversions
@@ -991,6 +994,23 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     // Test patterns
     var testPatternController = TestPatternController()
 
+    // Cross-Display Calibration (v4)
+    var referenceDisplayPopup: NSPopUpButton!
+    var referenceDisplayIDs: [CGDirectDisplayID] = []
+    var colorMatchPairs: [(source: NSColor, target: NSColor)] = []
+    var colorMatchStatusLabel: NSTextField!
+    var colorMatchCountLabel: NSTextField!
+    var colorMatchStep: Int = 0  // 0=idle, 1=waiting for source pick, 2=waiting for target pick
+    var pendingSourceColor: NSColor?
+    var matchColorButton: NSButton!
+    var quickMatchButton: NSButton!
+    var doneMatchingButton: NSButton!
+
+    // Target Gamma
+    var targetGamma: Double = 2.2
+    var gammaSlider: NSSlider!
+    var gammaLabel: NSTextField!
+
     let windowWidth: CGFloat = 1100
     let windowHeight: CGFloat = 950
 
@@ -1262,6 +1282,85 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         y -= 30
         let testBtn = makeActionButton("Test Patterns", x: panelX, y: y, width: 130, action: #selector(showTestPatterns(_:)))
         cv.addSubview(testBtn)
+
+        // Separator
+        y -= 16
+        let sep5 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep5.boxType = .separator
+        cv.addSubview(sep5)
+
+        // Cross-Display Calibration section
+        y -= 24
+        let calHeader = makeLabel("Cross-Display Calibration", x: panelX, y: y, width: panelW)
+        calHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(calHeader)
+
+        // Reference Display selector
+        y -= 28
+        let refLabel = makeLabel("Reference:", x: panelX, y: y + 2, width: 70)
+        refLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(refLabel)
+
+        referenceDisplayPopup = NSPopUpButton(frame: NSRect(x: panelX + 72, y: y, width: panelW - 72, height: 24))
+        cv.addSubview(referenceDisplayPopup)
+        populateReferenceDisplays()
+
+        // Match Color + Quick Match buttons
+        y -= 28
+        matchColorButton = makeActionButton("Match Color", x: panelX, y: y, width: 100, action: #selector(matchColorAction(_:)))
+        quickMatchButton = makeActionButton("Quick Match", x: panelX + 105, y: y, width: 100, action: #selector(quickMatchAction(_:)))
+        cv.addSubview(matchColorButton)
+        cv.addSubview(quickMatchButton)
+
+        // Done Matching button
+        y -= 28
+        doneMatchingButton = makeActionButton("Done Matching", x: panelX, y: y, width: 120, action: #selector(doneMatchingAction(_:)))
+        doneMatchingButton.isEnabled = false
+        cv.addSubview(doneMatchingButton)
+
+        // Status label
+        y -= 18
+        colorMatchStatusLabel = makeLabel("Ready", x: panelX, y: y, width: panelW)
+        colorMatchStatusLabel.font = NSFont.systemFont(ofSize: 9)
+        colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+        cv.addSubview(colorMatchStatusLabel)
+
+        // Pairs count label
+        y -= 14
+        colorMatchCountLabel = makeLabel("Pairs matched: 0", x: panelX, y: y, width: panelW)
+        colorMatchCountLabel.font = NSFont.systemFont(ofSize: 9)
+        colorMatchCountLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
+        cv.addSubview(colorMatchCountLabel)
+
+        // Separator
+        y -= 14
+        let sep6 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep6.boxType = .separator
+        cv.addSubview(sep6)
+
+        // Target Gamma section
+        y -= 22
+        let gammaHeader = makeLabel("Target Gamma", x: panelX, y: y, width: 100)
+        gammaHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(gammaHeader)
+
+        y -= 24
+        let gLabel = makeLabel("Gamma:", x: panelX, y: y + 2, width: 48)
+        gLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(gLabel)
+
+        gammaSlider = NSSlider(frame: NSRect(x: panelX + 50, y: y, width: panelW - 110, height: 20))
+        gammaSlider.minValue = 1.0
+        gammaSlider.maxValue = 3.0
+        gammaSlider.doubleValue = 2.2
+        gammaSlider.isContinuous = true
+        gammaSlider.target = self
+        gammaSlider.action = #selector(gammaSliderChanged(_:))
+        cv.addSubview(gammaSlider)
+
+        gammaLabel = makeLabel("2.20", x: panelX + panelW - 55, y: y + 2, width: 60)
+        gammaLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(gammaLabel)
     }
 
     func buildTonalSlidersForChannel(_ ch: CurveChannel) {
@@ -1398,6 +1497,39 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         if displayIDs.count > selectedIndex {
             displayPopup.selectItem(at: selectedIndex)
         }
+    }
+
+    func populateReferenceDisplays() {
+        referenceDisplayPopup.removeAllItems()
+        var onlineDisplays = [CGDirectDisplayID](repeating: 0, count: 16)
+        var displayCount: UInt32 = 0
+        CGGetOnlineDisplayList(16, &onlineDisplays, &displayCount)
+
+        referenceDisplayIDs = []
+        var selectedIndex = 0
+        for i in 0..<Int(displayCount) {
+            let did = onlineDisplays[i]
+            referenceDisplayIDs.append(did)
+            let w = CGDisplayPixelsWide(did)
+            let h = CGDisplayPixelsHigh(did)
+            let isMain = CGDisplayIsMain(did) != 0
+            var name = "\(w)x\(h)"
+            if isMain { name += " (Main)" }
+            // Default to the non-Cinema HD display as reference (the Samsung or main display)
+            if !(w == 2560 && h == 1600) {
+                selectedIndex = i
+            }
+            referenceDisplayPopup.addItem(withTitle: name)
+        }
+        if referenceDisplayIDs.count > selectedIndex {
+            referenceDisplayPopup.selectItem(at: selectedIndex)
+        }
+    }
+
+    var referenceDisplayID: CGDirectDisplayID {
+        let idx = referenceDisplayPopup.indexOfSelectedItem
+        if idx >= 0 && idx < referenceDisplayIDs.count { return referenceDisplayIDs[idx] }
+        return CGMainDisplayID()
     }
 
     var selectedDisplayID: CGDirectDisplayID {
@@ -1631,12 +1763,20 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             g *= CGFloat(wpG)
             b *= CGFloat(wpB)
 
-            // Step 6: Clamp 0-1
+            // Step 6: Target gamma correction (relative to standard 2.2)
+            if abs(targetGamma - 2.2) > 0.001 {
+                let gammaExp = CGFloat(targetGamma / 2.2)
+                if r > 0 { r = pow(r, gammaExp) }
+                if g > 0 { g = pow(g, gammaExp) }
+                if b > 0 { b = pow(b, gammaExp) }
+            }
+
+            // Step 7: Clamp 0-1
             r = max(0, min(1, r))
             g = max(0, min(1, g))
             b = max(0, min(1, b))
 
-            // Step 7: Safety clamp min 0.03 for indices > 0
+            // Step 8: Safety clamp min 0.03 for indices > 0
             if i > 0 {
                 r = max(0.03, r)
                 g = max(0.03, g)
@@ -1781,7 +1921,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         return UndoState(
             curves: curves,
             tonalBands: tonalBands,
-            whitePointKelvin: whitePointKelvin
+            whitePointKelvin: whitePointKelvin,
+            targetGamma: targetGamma
         )
     }
 
@@ -1789,6 +1930,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         curves = state.curves
         tonalBands = state.tonalBands
         whitePointKelvin = state.whitePointKelvin
+        targetGamma = state.targetGamma
 
         // Refresh UI
         curveView.points = curves[currentChannel.rawValue] ?? [CurvePoint(x: 0, y: 0), CurvePoint(x: 1, y: 1)]
@@ -1796,6 +1938,9 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         kelvinSlider.doubleValue = whitePointKelvin
         kelvinLabel.stringValue = String(format: "%.0fK", whitePointKelvin)
+
+        gammaSlider.doubleValue = targetGamma
+        gammaLabel.stringValue = String(format: "%.2f", targetGamma)
 
         // Refresh tonal EQ sliders
         for ch in CurveChannel.allCases {
@@ -1928,6 +2073,247 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         curveView.needsDisplay = true
     }
 
+    // MARK: - Cross-Display Calibration (v4)
+
+    @objc func matchColorAction(_ sender: Any?) {
+        if #available(macOS 10.15, *) {
+            colorMatchStep = 1
+            colorMatchStatusLabel.stringValue = "Step 1: Pick a color on the TARGET display..."
+            colorMatchStatusLabel.textColor = NSColor(calibratedRed: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
+            doneMatchingButton.isEnabled = true
+            matchColorButton.isEnabled = false
+
+            let sampler = NSColorSampler()
+            sampler.show { [weak self] selectedColor in
+                guard let self = self else { return }
+                guard let color = selectedColor else {
+                    self.colorMatchStep = 0
+                    self.colorMatchStatusLabel.stringValue = "Cancelled."
+                    self.colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+                    self.matchColorButton.isEnabled = true
+                    return
+                }
+                let rgb = color.usingColorSpace(.sRGB) ?? color
+                self.pendingSourceColor = rgb
+                self.colorMatchStep = 2
+                self.colorMatchStatusLabel.stringValue = "Step 2: Pick the SAME color on the REFERENCE display..."
+                self.colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.3, green: 0.8, blue: 1.0, alpha: 1.0)
+
+                let sampler2 = NSColorSampler()
+                sampler2.show { [weak self] selectedColor2 in
+                    guard let self = self else { return }
+                    guard let color2 = selectedColor2, let srcColor = self.pendingSourceColor else {
+                        self.colorMatchStep = 0
+                        self.colorMatchStatusLabel.stringValue = "Cancelled."
+                        self.colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+                        self.matchColorButton.isEnabled = true
+                        return
+                    }
+                    let tgtRGB = color2.usingColorSpace(.sRGB) ?? color2
+
+                    // Record the pair
+                    self.colorMatchPairs.append((source: srcColor, target: tgtRGB))
+
+                    // Apply curve points from this match
+                    self.applyCurvePointsFromColorMatch(source: srcColor, target: tgtRGB)
+
+                    let srcR = String(format: "%.2f", srcColor.redComponent)
+                    let srcG = String(format: "%.2f", srcColor.greenComponent)
+                    let srcB = String(format: "%.2f", srcColor.blueComponent)
+                    let tgtR = String(format: "%.2f", tgtRGB.redComponent)
+                    let tgtG = String(format: "%.2f", tgtRGB.greenComponent)
+                    let tgtB = String(format: "%.2f", tgtRGB.blueComponent)
+
+                    self.colorMatchStatusLabel.stringValue = "Mapped: R(\(srcR)->\(tgtR)) G(\(srcG)->\(tgtG)) B(\(srcB)->\(tgtB)). Pick another or Done."
+                    self.colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
+                    self.colorMatchCountLabel.stringValue = "Pairs matched: \(self.colorMatchPairs.count)"
+                    self.colorMatchStep = 0
+                    self.matchColorButton.isEnabled = true
+
+                    self.userHasInteracted = true
+                    self.refreshCurveView()
+                    self.pushUndoState()
+                    self.applyLUTIfPreviewOn()
+                }
+            }
+        }
+    }
+
+    func applyCurvePointsFromColorMatch(source: NSColor, target: NSColor) {
+        // For each channel, add a control point:
+        // x = source channel value (where on the curve this correction applies)
+        // y = target channel value (what it should map to)
+        let channels: [(CurveChannel, CGFloat, CGFloat)] = [
+            (.red, source.redComponent, target.redComponent),
+            (.green, source.greenComponent, target.greenComponent),
+            (.blue, source.blueComponent, target.blueComponent),
+        ]
+
+        for (channel, srcVal, tgtVal) in channels {
+            var pts = curves[channel.rawValue] ?? [CurvePoint(x: 0, y: 0), CurvePoint(x: 1, y: 1)]
+            // Remove any existing point very close to this x position (within 0.02)
+            pts.removeAll { abs($0.x - srcVal) < 0.02 && $0.x > 0.01 && $0.x < 0.99 }
+            // Add the new correction point
+            pts.append(CurvePoint(x: srcVal, y: tgtVal))
+            pts.sort { $0.x < $1.x }
+            curves[channel.rawValue] = pts
+        }
+    }
+
+    @objc func quickMatchAction(_ sender: Any?) {
+        // Automated profile-math calibration using ICC profile data
+        // Get the reference display's color space TRC
+        let refID = referenceDisplayID
+        let refColorSpace = CGDisplayCopyColorSpace(refID)
+
+        // Try to extract ICC profile data for gamma information
+        var refGamma: Double = 2.2 // default assumption: sRGB gamma
+
+        if let iccData = refColorSpace.iccData as Data? {
+            // Try to parse rTRC tag to extract gamma
+            if let parsedGamma = extractGammaFromICCData(iccData) {
+                refGamma = parsedGamma
+            }
+        }
+
+        // For the target display (Cinema HD on Raw Passthrough), assume gamma ~1.0
+        // The correction needed: apply pow(x, refGamma) to make it look like the reference
+        // But since we work with curve points, we sample 21 points
+
+        let testPoints = 21
+        for channel in [CurveChannel.red, CurveChannel.green, CurveChannel.blue] {
+            var pts: [CurvePoint] = []
+            for i in 0..<testPoints {
+                let x = CGFloat(i) / CGFloat(testPoints - 1)
+                // What the reference display shows at input x:
+                // refOutput = pow(x, refGamma) conceptually
+                // What the raw passthrough shows: just x (linear)
+                // Correction: we want output y such that the target display
+                // shows the same as the reference at input x
+                // If target is linear (gamma 1.0), we need y = pow(x, refGamma / 1.0) = pow(x, refGamma)
+                // But this is the full correction; typically we want y = pow(x, refGamma / 2.2)
+                // since macOS may already apply some gamma
+                // Use the simpler approach: assume raw passthrough needs sRGB gamma applied
+                let y = CGFloat(pow(Double(x), refGamma / 2.2))
+                pts.append(CurvePoint(x: x, y: y))
+            }
+            curves[channel.rawValue] = pts
+        }
+
+        colorMatchStatusLabel.stringValue = "Quick Match applied (ref gamma: \(String(format: "%.2f", refGamma)))"
+        colorMatchStatusLabel.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
+
+        userHasInteracted = true
+        refreshCurveView()
+        pushUndoState()
+        applyLUTIfPreviewOn()
+    }
+
+    func extractGammaFromICCData(_ data: Data) -> Double? {
+        // Minimal ICC parser: look for rTRC tag to extract a single gamma value
+        guard data.count > 132 else { return nil }
+
+        // Read tag count at offset 128
+        let tagCount = readUInt32(data, offset: 128)
+        guard tagCount > 0, tagCount < 100 else { return nil }
+
+        // Search for rTRC tag
+        for i in 0..<Int(tagCount) {
+            let entryOffset = 132 + i * 12
+            guard entryOffset + 12 <= data.count else { break }
+
+            let sig = String(data: data[entryOffset..<entryOffset+4], encoding: .ascii) ?? ""
+            if sig == "rTRC" {
+                let tagOffset = Int(readUInt32(data, offset: entryOffset + 4))
+                let tagSize = Int(readUInt32(data, offset: entryOffset + 8))
+                guard tagOffset + tagSize <= data.count else { return nil }
+
+                // Check if it's a 'curv' type
+                let typeSig = String(data: data[tagOffset..<tagOffset+4], encoding: .ascii) ?? ""
+                if typeSig == "curv" {
+                    let curveCount = Int(readUInt32(data, offset: tagOffset + 8))
+                    if curveCount == 0 {
+                        // Identity (gamma 1.0)
+                        return 1.0
+                    } else if curveCount == 1 {
+                        // Single u8Fixed8Number gamma value
+                        let gammaRaw = readUInt16(data, offset: tagOffset + 12)
+                        return Double(gammaRaw) / 256.0
+                    }
+                    // Multi-point TRC: approximate gamma from the curve
+                    // Sample the midpoint to estimate gamma
+                    if curveCount >= 2 {
+                        let midIdx = curveCount / 2
+                        let midOffset = tagOffset + 12 + midIdx * 2
+                        guard midOffset + 2 <= data.count else { return nil }
+                        let midVal = Double(readUInt16(data, offset: midOffset)) / 65535.0
+                        let midInput = Double(midIdx) / Double(curveCount - 1)
+                        // gamma = log(output) / log(input)
+                        if midInput > 0.01 && midInput < 0.99 && midVal > 0.001 {
+                            let estimatedGamma = log(midVal) / log(midInput)
+                            if estimatedGamma > 0.5 && estimatedGamma < 5.0 {
+                                return estimatedGamma
+                            }
+                        }
+                    }
+                }
+                // 'para' parametric curve type
+                if typeSig == "para" {
+                    let funcType = Int(readUInt16(data, offset: tagOffset + 8))
+                    if funcType == 0 {
+                        // Simple gamma: Y = X^g
+                        let gammaFixed = readS15Fixed16(data, offset: tagOffset + 12)
+                        if gammaFixed > 0.5 && gammaFixed < 5.0 {
+                            return gammaFixed
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    func readUInt32(_ data: Data, offset: Int) -> UInt32 {
+        guard offset + 4 <= data.count else { return 0 }
+        let bytes = [UInt8](data[offset..<offset+4])
+        return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
+    }
+
+    func readUInt16(_ data: Data, offset: Int) -> UInt16 {
+        guard offset + 2 <= data.count else { return 0 }
+        let bytes = [UInt8](data[offset..<offset+2])
+        return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+    }
+
+    func readS15Fixed16(_ data: Data, offset: Int) -> Double {
+        guard offset + 4 <= data.count else { return 0 }
+        let bytes = [UInt8](data[offset..<offset+4])
+        let raw = Int32(bytes[0]) << 24 | Int32(bytes[1]) << 16 | Int32(bytes[2]) << 8 | Int32(bytes[3])
+        return Double(raw) / 65536.0
+    }
+
+    @objc func doneMatchingAction(_ sender: Any?) {
+        colorMatchStep = 0
+        doneMatchingButton.isEnabled = false
+        if colorMatchPairs.isEmpty {
+            colorMatchStatusLabel.stringValue = "No color pairs recorded."
+        } else {
+            colorMatchStatusLabel.stringValue = "Calibration complete: \(colorMatchPairs.count) pair(s) applied."
+        }
+        colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+        matchColorButton.isEnabled = true
+    }
+
+    // MARK: - Target Gamma
+
+    @objc func gammaSliderChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        targetGamma = sender.doubleValue
+        gammaLabel.stringValue = String(format: "%.2f", targetGamma)
+        pushUndoState()
+        applyLUTIfPreviewOn()
+    }
+
     // MARK: - Reset
 
     @objc func resetAll(_ sender: Any?) {
@@ -1956,6 +2342,21 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         previewButton.title = "Preview OFF"
         liveIndicator.stringValue = "OFF"
         liveIndicator.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
+
+        // Reset cross-display calibration state
+        colorMatchPairs.removeAll()
+        colorMatchStep = 0
+        pendingSourceColor = nil
+        colorMatchStatusLabel.stringValue = "Ready"
+        colorMatchStatusLabel.textColor = NSColor(calibratedWhite: 0.6, alpha: 1.0)
+        colorMatchCountLabel.stringValue = "Pairs matched: 0"
+        doneMatchingButton.isEnabled = false
+        matchColorButton.isEnabled = true
+
+        // Reset gamma
+        targetGamma = 2.2
+        gammaSlider.doubleValue = 2.2
+        gammaLabel.stringValue = "2.20"
 
         stopDithering()
         CGDisplayRestoreColorSyncSettings()
@@ -1991,6 +2392,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         preset.tonalEQ.bands = tonalBands
         preset.whitePointKelvin = whitePointKelvin
         preset.previewOn = previewOn
+        preset.targetGamma = targetGamma
 
         let presetsDir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
         try? FileManager.default.createDirectory(atPath: presetsDir, withIntermediateDirectories: true)
@@ -2024,10 +2426,13 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             self.curves = preset.curves
             self.tonalBands = preset.tonalEQ.bands
             self.whitePointKelvin = preset.whitePointKelvin
+            self.targetGamma = preset.targetGamma ?? 2.2
 
             self.refreshCurveView()
             self.kelvinSlider.doubleValue = self.whitePointKelvin
             self.kelvinLabel.stringValue = String(format: "%.0fK", self.whitePointKelvin)
+            self.gammaSlider.doubleValue = self.targetGamma
+            self.gammaLabel.stringValue = String(format: "%.2f", self.targetGamma)
 
             for ch in CurveChannel.allCases {
                 if let sliders = self.tonalEQSliders[ch.rawValue],
