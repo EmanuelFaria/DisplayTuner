@@ -1606,13 +1606,15 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             let w = CGDisplayPixelsWide(did)
             let h = CGDisplayPixelsHigh(did)
             let isMain = CGDisplayIsMain(did) != 0
-            var name = "\(w)x\(h)"
-            if isMain { name += " (Main)" }
+            var label = "\(w)x\(h)"
+            if isMain { label += " (Main)" }
             if w == 2560 && h == 1600 {
-                name = "Cinema HD \(w)x\(h)"
+                label = "Cinema HD \(w)x\(h)"
                 selectedIndex = i
             }
-            displayPopup.addItem(withTitle: name)
+            displayPopup.addItem(withTitle: label)
+            // Store the resolution-only name for preset matching
+            displayPopup.lastItem?.representedObject = "\(w)x\(h)" as NSString
         }
         if displayIDs.count > selectedIndex {
             displayPopup.selectItem(at: selectedIndex)
@@ -1673,6 +1675,9 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
     var selectedDisplayName: String {
         let idx = displayPopup.indexOfSelectedItem
+        if idx >= 0, let obj = displayPopup.item(at: idx)?.representedObject as? String {
+            return obj  // resolution-only: "2560x1600"
+        }
         if idx >= 0, let title = displayPopup.item(at: idx)?.title {
             return title
         }
