@@ -1703,6 +1703,10 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         saveItem.target = self
         presetPopup.menu?.addItem(saveItem)
 
+        let openFolderItem = NSMenuItem(title: "Open Presets Folder...", action: #selector(openPresetsFolder(_:)), keyEquivalent: "")
+        openFolderItem.target = self
+        presetPopup.menu?.addItem(openFolderItem)
+
         if selectIndex >= 0 {
             presetPopup.selectItem(at: selectIndex)
         } else if presets.isEmpty {
@@ -1712,10 +1716,21 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
     }
 
+    @objc func openPresetsFolder(_ sender: Any?) {
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+    }
+
     @objc func presetPopupChanged(_ sender: NSPopUpButton) {
         guard let title = sender.selectedItem?.title else { return }
         if title == "Save As New..." {
             saveAsNewPreset(sender)
+            return
+        }
+        if title == "Open Presets Folder..." {
+            openPresetsFolder(sender)
+            // Re-select previous item
+            rebuildPresetDropdown()
             return
         }
         // Load the selected preset

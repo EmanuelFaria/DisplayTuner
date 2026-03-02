@@ -574,6 +574,11 @@ class MenuBarController: NSObject {
         saveItem.target = self
         presetSubmenu.addItem(saveItem)
 
+        let openFolderItem = NSMenuItem(title: "Open Presets Folder...", action: #selector(openPresetsFolder(_:)),
+                                        keyEquivalent: "")
+        openFolderItem.target = self
+        presetSubmenu.addItem(openFolderItem)
+
         presetSubmenuItem.submenu = presetSubmenu
         presetSubmenuItem.title = "Preset: \(current ?? "(none)")"
     }
@@ -651,6 +656,11 @@ class MenuBarController: NSObject {
         currentPresetName[d.name] = name
         PresetManager.setLastSettingName(name, forDisplay: d.name)
         rebuildPresetSubmenu()
+    }
+
+    @objc func openPresetsFolder(_ sender: Any?) {
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
     @objc func openDisplayTuner(_ sender: Any?) {
