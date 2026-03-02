@@ -1,0 +1,18 @@
+# Build artifacts
+DisplayTuner
+*.o
+*.dSYM/
+.build/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Xcode (in case someone opens it)
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+
+# User presets (local config)
+# ~/.config/displayctl/ is used instead

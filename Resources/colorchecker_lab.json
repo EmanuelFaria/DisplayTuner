@@ -1,0 +1,30 @@
+{
+  "description": "X-Rite ColorChecker Classic 24-patch CIE L*a*b* reference values (D50 illuminant)",
+  "source": "X-Rite published data, widely used in ArgyllCMS/DisplayCAL",
+  "patches": [
+    {"id": 1,  "name": "Dark Skin",       "L": 37.986, "a": 13.555, "b": 14.059},
+    {"id": 2,  "name": "Light Skin",      "L": 65.711, "a": 18.130, "b": 17.810},
+    {"id": 3,  "name": "Blue Sky",         "L": 49.927, "a": -4.880, "b": -21.925},
+    {"id": 4,  "name": "Foliage",          "L": 43.139, "a": -13.095, "b": 21.905},
+    {"id": 5,  "name": "Blue Flower",      "L": 55.112, "a": 8.844, "b": -25.399},
+    {"id": 6,  "name": "Bluish Green",     "L": 70.719, "a": -33.397, "b": -0.199},
+    {"id": 7,  "name": "Orange",           "L": 62.661, "a": 36.067, "b": 57.096},
+    {"id": 8,  "name": "Purplish Blue",    "L": 40.020, "a": 10.410, "b": -45.964},
+    {"id": 9,  "name": "Moderate Red",     "L": 51.124, "a": 48.239, "b": 16.248},
+    {"id": 10, "name": "Purple",           "L": 30.325, "a": 22.976, "b": -21.587},
+    {"id": 11, "name": "Yellow Green",     "L": 72.532, "a": -23.709, "b": 57.255},
+    {"id": 12, "name": "Orange Yellow",    "L": 71.941, "a": 19.363, "b": 67.857},
+    {"id": 13, "name": "Blue",             "L": 28.778, "a": 14.179, "b": -50.297},
+    {"id": 14, "name": "Green",            "L": 55.261, "a": -38.342, "b": 31.370},
+    {"id": 15, "name": "Red",              "L": 42.101, "a": 53.378, "b": 28.190},
+    {"id": 16, "name": "Yellow",           "L": 81.733, "a": 4.039,  "b": 79.819},
+    {"id": 17, "name": "Magenta",          "L": 51.935, "a": 49.986, "b": -14.574},
+    {"id": 18, "name": "Cyan",             "L": 51.038, "a": -28.631, "b": -28.638},
+    {"id": 19, "name": "White",            "L": 96.539, "a": -0.425, "b": 1.186},
+    {"id": 20, "name": "Neutral 8",        "L": 81.257, "a": -0.638, "b": -0.335},
+    {"id": 21, "name": "Neutral 6.5",      "L": 66.766, "a": -0.734, "b": -0.504},
+    {"id": 22, "name": "Neutral 5",        "L": 50.867, "a": -0.153, "b": -0.270},
+    {"id": 23, "name": "Neutral 3.5",      "L": 35.656, "a": -0.421, "b": -1.231},
+    {"id": 24, "name": "Black",            "L": 20.461, "a": -0.079, "b": -0.973}
+  ]
+}
