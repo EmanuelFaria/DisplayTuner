@@ -47,13 +47,13 @@ enum CurveChannel: Int, CaseIterable, Codable {
 }
 
 struct TonalEQState: Codable {
-    // 8 channels x 7 bands each
-    var bands: [Int: [Double]] // channel rawValue -> [7 band values]
+    // 8 channels x 12 bands each
+    var bands: [Int: [Double]] // channel rawValue -> [12 band values]
 
     init() {
         bands = [:]
         for ch in CurveChannel.allCases {
-            bands[ch.rawValue] = [Double](repeating: 0.0, count: 7)
+            bands[ch.rawValue] = [Double](repeating: 0.0, count: 12)
         }
     }
 }
@@ -413,13 +413,20 @@ class CurveView: NSView {
         NSColor(calibratedWhite: 0.10, alpha: 1.0).setFill()
         NSBezierPath(rect: area).fill()
 
-        // Gridlines at 25%
+        // Vertical gridlines at EQ band positions
         NSColor(calibratedWhite: 0.22, alpha: 1.0).setStroke()
-        for i in 1...3 {
-            let frac = CGFloat(i) * 0.25
+        for center in tonalBandCenters {
+            let frac = CGFloat(center)
             let path = NSBezierPath()
             path.move(to: NSPoint(x: area.minX + frac * area.width, y: area.minY))
             path.line(to: NSPoint(x: area.minX + frac * area.width, y: area.maxY))
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+        // Horizontal gridlines at 25%
+        for i in 1...3 {
+            let frac = CGFloat(i) * 0.25
+            let path = NSBezierPath()
             path.move(to: NSPoint(x: area.minX, y: area.minY + frac * area.height))
             path.line(to: NSPoint(x: area.maxX, y: area.minY + frac * area.height))
             path.lineWidth = 0.5
@@ -555,9 +562,9 @@ class CurveView: NSView {
 
 // MARK: - Tonal EQ Band Constants
 
-let tonalBandCenters: [Double] = [0.07, 0.15, 0.30, 0.50, 0.70, 0.85, 0.93]
-let tonalBandLabels: [String] = ["Deep Sh", "Shadow", "Lo-Mid", "Mid", "Hi-Mid", "Hi-Lit", "Peak W"]
-let tonalBandSigma: Double = 0.08
+let tonalBandCenters: [Double] = [0.02, 0.07, 0.12, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.97]
+let tonalBandLabels: [String] = ["Blk", "DSh", "Shd", "LSh", "LMd", "MLo", "Mid", "MHi", "HMd", "Hlt", "HLt", "PkW"]
+let tonalBandSigma: Double = 0.05
 
 // MARK: - ColorChecker Reference Data
 
@@ -832,65 +839,102 @@ class TestPatternView: NSView {
 // MARK: - Test Pattern Window Controller
 
 class TestPatternController: NSObject, NSWindowDelegate {
-    var window: NSWindow!
-    var patternView: TestPatternView!
-    var patternSelector: NSPopUpButton!
+    var windows: [NSWindow] = []
+    var patternViews: [TestPatternView] = []
+    var currentPatternType: TestPatternView.PatternType = .grayscale
 
     func showWindow() {
-        if window != nil {
-            window.makeKeyAndOrderFront(nil)
+        if !windows.isEmpty {
+            windows.forEach { $0.makeKeyAndOrderFront(nil) }
             return
         }
+        // Get all screens and create one window per screen
+        let screens = NSScreen.screens
+        for (i, screen) in screens.enumerated() {
+            createPatternWindow(on: screen, index: i)
+        }
+    }
 
-        let contentRect = NSRect(x: 0, y: 0, width: 800, height: 520)
-        window = NSWindow(contentRect: contentRect,
-                          styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                          backing: .buffered, defer: false)
-        window.title = "Test Patterns"
-        window.delegate = self
-        window.isReleasedWhenClosed = false
-        window.backgroundColor = .black
+    func createPatternWindow(on screen: NSScreen, index: Int) {
+        let frame = screen.frame
+        let contentRect = NSRect(x: frame.origin.x + 50, y: frame.origin.y + 50,
+                                 width: min(frame.width - 100, 1200),
+                                 height: min(frame.height - 100, 800))
+        let w = NSWindow(contentRect: contentRect,
+                         styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                         backing: .buffered, defer: false)
+        let displayName = "\(Int(frame.width))x\(Int(frame.height))"
+        w.title = "Test Patterns — Display \(index + 1) (\(displayName))"
+        w.delegate = self
+        w.isReleasedWhenClosed = false
+        w.backgroundColor = .black
 
-        let cv = window.contentView!
+        let cv = w.contentView!
 
-        patternSelector = NSPopUpButton(frame: NSRect(x: 10, y: contentRect.height - 35, width: 200, height: 26))
-        patternSelector.addItems(withTitles: [
+        // Toolbar at top — pinned using autoresizing
+        let toolbar = NSView(frame: NSRect(x: 0, y: contentRect.height - 40,
+                                           width: contentRect.width, height: 40))
+        toolbar.autoresizingMask = [.width, .minYMargin]
+        toolbar.wantsLayer = true
+        toolbar.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.95).cgColor
+
+        let selector = NSPopUpButton(frame: NSRect(x: 10, y: 7, width: 200, height: 26))
+        selector.addItems(withTitles: [
             "Grayscale Ramp", "Near-Black (0-5%)", "Near-White (95-100%)",
             "ColorChecker 24", "Gamma Verify", "RGB Primaries", "Skin Tones"
         ])
-        patternSelector.target = self
-        patternSelector.action = #selector(patternChanged(_:))
-        cv.addSubview(patternSelector)
+        selector.selectItem(at: currentPatternType.rawValue)
+        selector.tag = index
+        selector.target = self
+        selector.action = #selector(patternChanged(_:))
+        toolbar.addSubview(selector)
 
-        let fsButton = NSButton(frame: NSRect(x: 220, y: contentRect.height - 35, width: 120, height: 26))
+        let fsButton = NSButton(frame: NSRect(x: 220, y: 7, width: 120, height: 26))
         fsButton.title = "Full Screen (F)"
         fsButton.bezelStyle = .rounded
+        fsButton.tag = index
         fsButton.target = self
         fsButton.action = #selector(toggleFullScreen(_:))
-        cv.addSubview(fsButton)
+        toolbar.addSubview(fsButton)
 
-        patternView = TestPatternView(frame: NSRect(x: 0, y: 0,
-                                                     width: contentRect.width,
-                                                     height: contentRect.height - 44))
-        patternView.autoresizingMask = [.width, .height]
-        cv.addSubview(patternView)
+        cv.addSubview(toolbar)
 
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        let pv = TestPatternView(frame: NSRect(x: 0, y: 0,
+                                               width: contentRect.width,
+                                               height: contentRect.height - 40))
+        pv.autoresizingMask = [.width, .height]
+        pv.patternType = currentPatternType
+        cv.addSubview(pv)
+
+        windows.append(w)
+        patternViews.append(pv)
+
+        w.makeKeyAndOrderFront(nil)
     }
 
     @objc func patternChanged(_ sender: NSPopUpButton) {
         if let pt = TestPatternView.PatternType(rawValue: sender.indexOfSelectedItem) {
-            patternView.patternType = pt
+            currentPatternType = pt
+            // Update ALL pattern views to the same pattern
+            for pv in patternViews {
+                pv.patternType = pt
+            }
         }
     }
 
-    @objc func toggleFullScreen(_ sender: Any?) {
-        window.toggleFullScreen(nil)
+    @objc func toggleFullScreen(_ sender: NSButton) {
+        let idx = sender.tag
+        if idx < windows.count {
+            windows[idx].toggleFullScreen(nil)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Just hide, don't destroy
+        // Remove closed window from tracking
+        if let w = notification.object as? NSWindow, let idx = windows.firstIndex(of: w) {
+            windows.remove(at: idx)
+            if idx < patternViews.count { patternViews.remove(at: idx) }
+        }
     }
 }
 
@@ -903,7 +947,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var channelButtons: [NSButton] = []
 
     // Tonal EQ
-    var tonalEQSliders: [Int: [NSSlider]] = [:] // channel rawValue -> 7 sliders
+    var tonalEQSliders: [Int: [NSSlider]] = [:] // channel rawValue -> 12 sliders
     var tonalEQLabels: [Int: [NSTextField]] = [:]
     var tonalEQChannel: CurveChannel = .master
     var tonalChannelButtons: [NSButton] = []
@@ -948,7 +992,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var testPatternController = TestPatternController()
 
     let windowWidth: CGFloat = 1100
-    let windowHeight: CGFloat = 750
+    let windowHeight: CGFloat = 950
 
     override init() {
         super.init()
@@ -964,7 +1008,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
     func initTonalBands() {
         for ch in CurveChannel.allCases {
-            tonalBands[ch.rawValue] = [Double](repeating: 0.0, count: 7)
+            tonalBands[ch.rawValue] = [Double](repeating: 0.0, count: 12)
         }
     }
 
@@ -978,7 +1022,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         window.title = "DisplayTuner v3"
         window.delegate = self
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 1000, height: 700)
+        window.minSize = NSSize(width: 1000, height: 900)
         window.center()
         window.backgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1.0)
 
@@ -1026,7 +1070,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         cv.addSubview(liveIndicator)
     }
 
-    // MARK: - Left Panel (Curves + White Point)
+    // MARK: - Left Panel (Curves only)
 
     func buildLeftPanel(_ cv: NSView) {
         let panelX: CGFloat = 15
@@ -1079,9 +1123,16 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         infoLabel.font = NSFont.systemFont(ofSize: 9)
         infoLabel.textColor = NSColor(calibratedWhite: 0.50, alpha: 1.0)
         cv.addSubview(infoLabel)
+    }
+
+    // MARK: - Right Panel (Controls)
+
+    func buildRightPanel(_ cv: NSView) {
+        let panelX: CGFloat = 560
+        let panelW: CGFloat = windowWidth - panelX - 15
+        var y = windowHeight - 68
 
         // White Point section
-        y -= 28
         let wpHeader = makeLabel("White Point", x: panelX, y: y, width: 100)
         wpHeader.font = NSFont.boldSystemFont(ofSize: 11)
         cv.addSubview(wpHeader)
@@ -1108,7 +1159,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         kLabel.font = NSFont.systemFont(ofSize: 10)
         cv.addSubview(kLabel)
 
-        kelvinSlider = NSSlider(frame: NSRect(x: panelX + 50, y: y, width: 350, height: 20))
+        kelvinSlider = NSSlider(frame: NSRect(x: panelX + 50, y: y, width: panelW - 110, height: 20))
         kelvinSlider.minValue = 3200
         kelvinSlider.maxValue = 9300
         kelvinSlider.doubleValue = 6500
@@ -1117,52 +1168,106 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         kelvinSlider.action = #selector(kelvinSliderChanged(_:))
         cv.addSubview(kelvinSlider)
 
-        kelvinLabel = makeLabel("6500K", x: panelX + 405, y: y + 2, width: 60)
+        kelvinLabel = makeLabel("6500K", x: panelX + panelW - 55, y: y + 2, width: 60)
         kelvinLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         cv.addSubview(kelvinLabel)
-    }
 
-    // MARK: - Right Panel (Tonal EQ)
+        // Separator line
+        y -= 16
+        let sep1 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep1.boxType = .separator
+        cv.addSubview(sep1)
 
-    func buildRightPanel(_ cv: NSView) {
-        let panelX: CGFloat = 560
-        var y = windowHeight - 68
+        // Eyedropper buttons
+        y -= 30
+        let pickBlack = makeActionButton("Pick Black", x: panelX, y: y, width: 90, action: #selector(pickBlackPoint(_:)))
+        let pickWhite = makeActionButton("Pick White", x: panelX + 95, y: y, width: 90, action: #selector(pickWhitePoint(_:)))
+        let pickGray = makeActionButton("Pick Gray", x: panelX + 190, y: y, width: 90, action: #selector(pickGrayPoint(_:)))
+        cv.addSubview(pickBlack)
+        cv.addSubview(pickWhite)
+        cv.addSubview(pickGray)
 
-        // Tonal EQ header
-        let header = makeLabel("Tonal EQ", x: panelX, y: y + 4, width: 100)
-        header.font = NSFont.boldSystemFont(ofSize: 12)
-        cv.addSubview(header)
+        // Separator
+        y -= 16
+        let sep2 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep2.boxType = .separator
+        cv.addSubview(sep2)
 
-        // Channel tabs for tonal EQ
-        var tabX: CGFloat = panelX + 80
-        for ch in CurveChannel.allCases {
-            let btn = makeTabButton(ch, x: tabX, y: y, tag: 100 + ch.rawValue)
-            btn.target = self
-            btn.action = #selector(tonalChannelTabClicked(_:))
-            cv.addSubview(btn)
-            tonalChannelButtons.append(btn)
-            tabX += btn.frame.width + 2
+        // Sharpening section (stubbed)
+        y -= 24
+        let sharpHeader = makeLabel("Sharpening", x: panelX, y: y, width: 100)
+        sharpHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(sharpHeader)
+
+        y -= 18
+        let stubLabel = makeLabel("Coming Soon", x: panelX, y: y, width: panelW)
+        stubLabel.font = NSFont.systemFont(ofSize: 9)
+        stubLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
+        cv.addSubview(stubLabel)
+
+        // Separator
+        y -= 16
+        let sep3 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep3.boxType = .separator
+        cv.addSubview(sep3)
+
+        // Preview toggle
+        y -= 32
+        previewButton = NSButton(frame: NSRect(x: panelX, y: y, width: 130, height: 28))
+        previewButton.title = "Preview OFF"
+        previewButton.bezelStyle = .rounded
+        previewButton.target = self
+        previewButton.action = #selector(togglePreview(_:))
+        cv.addSubview(previewButton)
+
+        // Undo / Redo
+        y -= 32
+        let undoBtn = makeActionButton("Undo", x: panelX, y: y, width: 80, action: #selector(undoAction(_:)))
+        let redoBtn = makeActionButton("Redo", x: panelX + 85, y: y, width: 80, action: #selector(redoAction(_:)))
+        cv.addSubview(undoBtn)
+        cv.addSubview(redoBtn)
+
+        // Enhanced precision checkbox
+        y -= 28
+        let ditheringCheck = NSButton(checkboxWithTitle: "Enhanced Precision", target: self,
+                                       action: #selector(toggleDithering(_:)))
+        ditheringCheck.frame = NSRect(x: panelX, y: y, width: 180, height: 20)
+        ditheringCheck.state = .off
+        if #available(macOS 10.14, *) {
+            ditheringCheck.contentTintColor = NSColor(calibratedWhite: 0.7, alpha: 1.0)
         }
-        updateTonalTabHighlight()
+        cv.addSubview(ditheringCheck)
 
-        // Container for sliders
-        y -= 6
-        tonalSliderContainer = NSView(frame: NSRect(x: panelX, y: y - 490,
-                                                     width: windowWidth - panelX - 15, height: 490))
-        tonalSliderContainer.wantsLayer = true
-        cv.addSubview(tonalSliderContainer)
+        // Separator
+        y -= 16
+        let sep4 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
+        sep4.boxType = .separator
+        cv.addSubview(sep4)
 
-        // Build all channel slider sets
-        for ch in CurveChannel.allCases {
-            buildTonalSlidersForChannel(ch)
-        }
-        showTonalSlidersForChannel(.master)
+        // Action buttons
+        y -= 30
+        let resetBtn = makeActionButton("Reset All", x: panelX, y: y, width: 85, action: #selector(resetAll(_:)))
+        let saveBtn = makeActionButton("Save", x: panelX + 90, y: y, width: 70, action: #selector(savePreset(_:)))
+        let loadBtn = makeActionButton("Load", x: panelX + 165, y: y, width: 70, action: #selector(loadPreset(_:)))
+        cv.addSubview(resetBtn)
+        cv.addSubview(saveBtn)
+        cv.addSubview(loadBtn)
+
+        y -= 30
+        let exportICC = makeActionButton("Export ICC", x: panelX, y: y, width: 110, action: #selector(exportICCAction(_:)))
+        let exportCube = makeActionButton("Export .cube", x: panelX + 115, y: y, width: 110, action: #selector(exportCubeAction(_:)))
+        cv.addSubview(exportICC)
+        cv.addSubview(exportCube)
+
+        y -= 30
+        let testBtn = makeActionButton("Test Patterns", x: panelX, y: y, width: 130, action: #selector(showTestPatterns(_:)))
+        cv.addSubview(testBtn)
     }
 
     func buildTonalSlidersForChannel(_ ch: CurveChannel) {
-        let sliderHeight: CGFloat = 380
+        let sliderHeight: CGFloat = 160
         let containerW = tonalSliderContainer.frame.width
-        let bandCount = 7
+        let bandCount = 12
         let spacing = containerW / CGFloat(bandCount)
 
         var sliders: [NSSlider] = []
@@ -1229,75 +1334,41 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
     }
 
-    // MARK: - Bottom Bar
+    // MARK: - Bottom Bar (Tonal EQ)
 
     func buildBottomBar(_ cv: NSView) {
-        var y: CGFloat = 90
+        let eqPanelHeight: CGFloat = 240
+        let panelX: CGFloat = 15
+        let y: CGFloat = eqPanelHeight + 10
 
-        // Sharpening section (stubbed)
-        let sharpBox = NSBox(frame: NSRect(x: 15, y: y, width: windowWidth - 30, height: 40))
-        sharpBox.title = "Sharpening"
-        sharpBox.titleFont = NSFont.systemFont(ofSize: 10, weight: .medium)
-        sharpBox.boxType = .primary
-        sharpBox.contentViewMargins = NSSize(width: 4, height: 2)
+        // Tonal EQ header + channel tabs
+        let header = makeLabel("Tonal EQ", x: panelX, y: y + 4, width: 80)
+        header.font = NSFont.boldSystemFont(ofSize: 12)
+        cv.addSubview(header)
 
-        let stubLabel = makeLabel("Coming Soon — Sharpening overlay requires screen capture entitlement",
-                                  x: 8, y: 2, width: 600)
-        stubLabel.font = NSFont.systemFont(ofSize: 9)
-        stubLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
-        sharpBox.contentView?.addSubview(stubLabel)
-        cv.addSubview(sharpBox)
-
-        // Eyedroppers + Preview + Undo row
-        y -= 38
-        let pickBlack = makeActionButton("Pick Black", x: 15, y: y, width: 90, action: #selector(pickBlackPoint(_:)))
-        let pickWhite = makeActionButton("Pick White", x: 110, y: y, width: 90, action: #selector(pickWhitePoint(_:)))
-        let pickGray = makeActionButton("Pick Gray", x: 205, y: y, width: 90, action: #selector(pickGrayPoint(_:)))
-        cv.addSubview(pickBlack)
-        cv.addSubview(pickWhite)
-        cv.addSubview(pickGray)
-
-        // Separator
-        let sepView = NSBox(frame: NSRect(x: 305, y: y + 2, width: 1, height: 24))
-        sepView.boxType = .separator
-        cv.addSubview(sepView)
-
-        previewButton = NSButton(frame: NSRect(x: 315, y: y, width: 110, height: 28))
-        previewButton.title = "Preview OFF"
-        previewButton.bezelStyle = .rounded
-        previewButton.target = self
-        previewButton.action = #selector(togglePreview(_:))
-        cv.addSubview(previewButton)
-
-        let undoBtn = makeActionButton("Undo", x: 435, y: y, width: 70, action: #selector(undoAction(_:)))
-        let redoBtn = makeActionButton("Redo", x: 510, y: y, width: 70, action: #selector(redoAction(_:)))
-        cv.addSubview(undoBtn)
-        cv.addSubview(redoBtn)
-
-        // Enhanced precision checkbox
-        let ditheringCheck = NSButton(checkboxWithTitle: "Enhanced Precision", target: self,
-                                       action: #selector(toggleDithering(_:)))
-        ditheringCheck.frame = NSRect(x: 600, y: y + 2, width: 160, height: 20)
-        ditheringCheck.state = .off
-        if #available(macOS 10.14, *) {
-            ditheringCheck.contentTintColor = NSColor(calibratedWhite: 0.7, alpha: 1.0)
+        var tabX: CGFloat = panelX + 80
+        for ch in CurveChannel.allCases {
+            let btn = makeTabButton(ch, x: tabX, y: y, tag: 100 + ch.rawValue)
+            btn.target = self
+            btn.action = #selector(tonalChannelTabClicked(_:))
+            cv.addSubview(btn)
+            tonalChannelButtons.append(btn)
+            tabX += btn.frame.width + 2
         }
-        cv.addSubview(ditheringCheck)
+        updateTonalTabHighlight()
 
-        // Bottom action buttons
-        y -= 38
-        let resetBtn = makeActionButton("Reset All", x: 15, y: y, width: 85, action: #selector(resetAll(_:)))
-        let saveBtn = makeActionButton("Save", x: 105, y: y, width: 70, action: #selector(savePreset(_:)))
-        let loadBtn = makeActionButton("Load", x: 180, y: y, width: 70, action: #selector(loadPreset(_:)))
-        let exportICC = makeActionButton("Export ICC", x: 255, y: y, width: 95, action: #selector(exportICCAction(_:)))
-        let exportCube = makeActionButton("Export .cube", x: 355, y: y, width: 100, action: #selector(exportCubeAction(_:)))
-        let testBtn = makeActionButton("Test Patterns", x: 460, y: y, width: 110, action: #selector(showTestPatterns(_:)))
-        cv.addSubview(resetBtn)
-        cv.addSubview(saveBtn)
-        cv.addSubview(loadBtn)
-        cv.addSubview(exportICC)
-        cv.addSubview(exportCube)
-        cv.addSubview(testBtn)
+        // Container for tonal EQ sliders (full width)
+        let containerY: CGFloat = 10
+        tonalSliderContainer = NSView(frame: NSRect(x: panelX, y: containerY,
+                                                     width: windowWidth - panelX * 2, height: eqPanelHeight))
+        tonalSliderContainer.wantsLayer = true
+        cv.addSubview(tonalSliderContainer)
+
+        // Build all channel slider sets
+        for ch in CurveChannel.allCases {
+            buildTonalSlidersForChannel(ch)
+        }
+        showTonalSlidersForChannel(.master)
     }
 
     // MARK: - Display Management
@@ -1452,9 +1523,15 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     func applyLUTIfPreviewOn() {
-        if previewOn && userHasInteracted {
-            applyLUT()
+        guard userHasInteracted else { return }
+        // Auto-enable preview on first interaction
+        if !previewOn {
+            previewOn = true
+            previewButton.title = "Preview ON"
+            liveIndicator.stringValue = "LIVE"
+            liveIndicator.textColor = NSColor(calibratedRed: 0.2, green: 0.9, blue: 0.2, alpha: 1.0)
         }
+        applyLUT()
     }
 
     // MARK: - LUT Pipeline
@@ -1522,7 +1599,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             g -= (mDelta + kDelta)
             b -= (yDelta + kDelta)
 
-            // Step 4: Tonal EQ - apply 7-band Gaussian brightness per channel
+            // Step 4: Tonal EQ - apply 12-band Gaussian brightness per channel
             r = applyTonalEQ(r, originalT: t, channelRaw: CurveChannel.master.rawValue)
             r = applyTonalEQ(r, originalT: t, channelRaw: CurveChannel.red.rawValue)
 
@@ -1570,7 +1647,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     func applyTonalEQ(_ value: CGFloat, originalT: CGFloat, channelRaw: Int) -> CGFloat {
         guard let bands = tonalBands[channelRaw] else { return value }
         var v = value
-        for band in 0..<7 {
+        for band in 0..<12 {
             let center = CGFloat(tonalBandCenters[band])
             let sigma = CGFloat(tonalBandSigma)
             let weight = gaussianWeight(originalT, center: center, sigma: sigma)
@@ -1582,7 +1659,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     func computeTonalEQDelta(_ t: CGFloat, channelRaw: Int) -> CGFloat {
         guard let bands = tonalBands[channelRaw] else { return 0 }
         var delta: CGFloat = 0
-        for band in 0..<7 {
+        for band in 0..<12 {
             let center = CGFloat(tonalBandCenters[band])
             let sigma = CGFloat(tonalBandSigma)
             let weight = gaussianWeight(t, center: center, sigma: sigma)
