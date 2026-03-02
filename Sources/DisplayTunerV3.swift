@@ -1082,6 +1082,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var tonalBands: [Int: [Double]] = [:]
     var displayIDs: [CGDirectDisplayID] = []
     var userHasInteracted: Bool = false
+    var isLoadingPreset: Bool = false
 
     // Undo/Redo
     var undoStack: [UndoState] = []
@@ -1700,6 +1701,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         rebuildPresetDropdown()
 
         // Auto-load this display's last-used preset if available
+        isLoadingPreset = true
         let displayName = selectedDisplayName
         if let lastSetting = PresetManager.lastSettingName(forDisplay: displayName) {
             let prefix = PresetManager.sanitizeDisplayName(displayName)
@@ -1749,9 +1751,11 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 }
 
                 userHasInteracted = true
+                isLoadingPreset = false
                 if previewOn { applyLUT() }
             }
         } else {
+            isLoadingPreset = false
             // No saved preset for this display — reset curves to identity
             initCurves()
             initTonalBands()
@@ -1871,13 +1875,26 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let displayName = selectedDisplayName
         let prefix = PresetManager.sanitizeDisplayName(displayName)
         let filename = "\(prefix)-\(title).json"
-        guard let preset = PresetManager.loadPreset(filename: filename) else { return }
+        guard let preset = PresetManager.loadPreset(filename: filename) else {
+            // Show error — don't fail silently
+            let alert = NSAlert()
+            alert.messageText = "Could not load preset"
+            alert.informativeText = "'\(title)' may be in an old format. Try Browse... to load it manually, or delete and re-save."
+            alert.alertStyle = .warning
+            alert.runModal()
+            rebuildPresetDropdown()
+            return
+        }
+
+        // Set flag to prevent computeFinalLUT from overwriting loaded curves
+        isLoadingPreset = true
 
         self.curves = preset.curves
         self.tonalBands = preset.tonalEQ.bands
         self.whitePointKelvin = preset.whitePointKelvin
         self.targetGamma = preset.targetGamma ?? 2.2
 
+        // Update ALL UI elements to reflect the loaded preset
         self.refreshCurveView()
         self.kelvinSlider.doubleValue = self.whitePointKelvin
         self.kelvinLabel.stringValue = String(format: "%.0fK", self.whitePointKelvin)
@@ -1899,11 +1916,15 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             }
         }
 
+        // Ensure curveView.points matches the loaded data for the current channel
+        curveView.points = curves[currentChannel.rawValue] ?? [CurvePoint(x: 0, y: 0), CurvePoint(x: 1, y: 1)]
+        curveView.needsDisplay = true
+
         // Track last-used
         PresetManager.setLastSettingName(title, forDisplay: displayName)
 
         self.userHasInteracted = true
-        // Force preview ON and apply — loading a preset should always take effect
+        // Force preview ON and apply
         if !previewOn {
             previewOn = true
             previewButton.title = "Preview ON"
@@ -1912,6 +1933,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
         self.pushUndoState()
         self.applyLUT()
+
+        isLoadingPreset = false
     }
 
     @objc func renameCurrentPreset(_ sender: Any?) {
@@ -2212,7 +2235,11 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     // MARK: - LUT Pipeline
 
     func computeFinalLUT() -> ([Float], [Float], [Float]) {
-        curves[currentChannel.rawValue] = curveView.points
+        // Sync current curve view to curves dict ONLY during interactive editing
+        // (not during preset load — preset load sets curves directly)
+        if userHasInteracted && !isLoadingPreset {
+            curves[currentChannel.rawValue] = curveView.points
+        }
 
         // Step 1: Master curve
         let masterLUT = monotonicCubicInterpolation(
