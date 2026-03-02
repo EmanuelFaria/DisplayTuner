@@ -1688,16 +1688,90 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     @objc func displayChanged(_ sender: Any?) {
-        // When user explicitly switches display target, restore old display and lock new one
-        if userHasInteracted && targetDisplayID != 0 {
-            CGDisplayRestoreColorSyncSettings()
-        }
+        // Restore ALL displays to clean state before switching
+        stopDithering()
+        stopSharpeningOverlay()
+        CGDisplayRestoreColorSyncSettings()
+
+        // Lock to the newly selected display
         targetDisplayID = selectedDisplayID
-        if userHasInteracted && previewOn {
-            applyLUT()
-        }
-        // Refresh preset dropdown for newly selected display
+
+        // Rebuild preset dropdown filtered for this display
         rebuildPresetDropdown()
+
+        // Auto-load this display's last-used preset if available
+        let displayName = selectedDisplayName
+        if let lastSetting = PresetManager.lastSettingName(forDisplay: displayName) {
+            let prefix = PresetManager.sanitizeDisplayName(displayName)
+            let filename = "\(prefix)-\(lastSetting).json"
+            if let preset = PresetManager.loadPreset(filename: filename) {
+                self.curves = preset.curves
+                self.tonalBands = preset.tonalEQ.bands
+                self.whitePointKelvin = preset.whitePointKelvin
+                self.targetGamma = preset.targetGamma ?? 2.2
+                self.quickBrightness = 1.0
+                self.quickContrast = 1.0
+                self.quickDetail = 0.0
+
+                refreshCurveView()
+                kelvinSlider.doubleValue = whitePointKelvin
+                kelvinLabel.stringValue = String(format: "%.0fK", whitePointKelvin)
+                gammaSlider.doubleValue = targetGamma
+                gammaLabel.stringValue = String(format: "%.2f", targetGamma)
+                quickBrightnessSlider.doubleValue = 1.0
+                quickBrightnessLabel.stringValue = "1.00"
+                quickContrastSlider.doubleValue = 1.0
+                quickContrastLabel.stringValue = "1.00"
+                quickDetailSlider.doubleValue = 0.0
+                quickDetailLabel.stringValue = "0.00"
+
+                for ch in CurveChannel.allCases {
+                    if let sliders = tonalEQSliders[ch.rawValue],
+                       let bands = tonalBands[ch.rawValue] {
+                        for (i, slider) in sliders.enumerated() where i < bands.count {
+                            slider.doubleValue = bands[i]
+                        }
+                    }
+                    if let labels = tonalEQLabels[ch.rawValue],
+                       let bands = tonalBands[ch.rawValue] {
+                        for (i, label) in labels.enumerated() where i < bands.count {
+                            label.stringValue = String(format: "%.2f", bands[i])
+                        }
+                    }
+                }
+
+                // Select the preset in the dropdown
+                for i in 0..<presetPopup.numberOfItems {
+                    if presetPopup.item(at: i)?.title == lastSetting {
+                        presetPopup.selectItem(at: i)
+                        break
+                    }
+                }
+
+                userHasInteracted = true
+                if previewOn { applyLUT() }
+            }
+        } else {
+            // No saved preset for this display — reset curves to identity
+            initCurves()
+            initTonalBands()
+            whitePointKelvin = 6500
+            targetGamma = 2.2
+            quickBrightness = 1.0
+            quickContrast = 1.0
+            quickDetail = 0.0
+            refreshCurveView()
+            kelvinSlider.doubleValue = 6500
+            kelvinLabel.stringValue = "6500K"
+            gammaSlider.doubleValue = 2.2
+            gammaLabel.stringValue = "2.20"
+            quickBrightnessSlider.doubleValue = 1.0
+            quickBrightnessLabel.stringValue = "1.00"
+            quickContrastSlider.doubleValue = 1.0
+            quickContrastLabel.stringValue = "1.00"
+            quickDetailSlider.doubleValue = 0.0
+            quickDetailLabel.stringValue = "0.00"
+        }
     }
 
     var selectedDisplayName: String {
