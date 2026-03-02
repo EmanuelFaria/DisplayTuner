@@ -1407,7 +1407,14 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     @objc func displayChanged(_ sender: Any?) {
-        // SAFETY: display change does NOT apply LUT
+        // When user explicitly switches display target, restore old display and lock new one
+        if userHasInteracted && targetDisplayID != 0 {
+            CGDisplayRestoreColorSyncSettings()
+        }
+        targetDisplayID = selectedDisplayID
+        if userHasInteracted && previewOn {
+            applyLUT()
+        }
     }
 
     // MARK: - Channel Switching (Curves)
@@ -1514,9 +1521,9 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             previewButton.title = "Preview OFF"
             liveIndicator.stringValue = "OFF"
             liveIndicator.textColor = NSColor(calibratedWhite: 0.5, alpha: 1.0)
-            // Apply identity LUT
+            // Apply identity LUT to target display only
             var identity = (0..<256).map { Float($0) / 255.0 }
-            let did = selectedDisplayID
+            let did = targetDisplayID != 0 ? targetDisplayID : selectedDisplayID
             CGSetDisplayTransferByTable(did, 256, &identity, &identity, &identity)
             stopDithering()
         }
@@ -1668,11 +1675,19 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         return delta
     }
 
+    var targetDisplayID: CGDirectDisplayID = 0  // locked when user first interacts
+
     func applyLUT() {
         guard userHasInteracted else { return }
 
+        // Lock the target display on first interaction — never change mid-session
+        // This prevents accidentally sending gamma tables to the wrong display
+        if targetDisplayID == 0 {
+            targetDisplayID = selectedDisplayID
+        }
+        let did = targetDisplayID
+
         let (rTable, gTable, bTable) = computeFinalLUT()
-        let did = selectedDisplayID
 
         // SAFETY: reject if any channel peak < 0.1
         guard let rMax = rTable.max(), let gMax = gTable.max(), let bMax = bTable.max(),
@@ -1680,9 +1695,10 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             return
         }
 
-        var r = rTable
-        var g = gTable
-        var b = bTable
+        // SAFETY: clamp minimum to 0.03 for indices > 0
+        var r = rTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
+        var g = gTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
+        var b = bTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
 
         // Store for temporal dithering
         lastRTable = r
@@ -1727,7 +1743,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         ditheringFrame += 1
         let useFloor = (ditheringFrame % 2 == 0)
 
-        let did = selectedDisplayID
+        guard targetDisplayID != 0 else { return }  // SAFETY: don't dither until display is locked
+        let did = targetDisplayID
         var r = lastRTable
         var g = lastGTable
         var b = lastBTable
