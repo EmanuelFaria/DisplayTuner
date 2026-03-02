@@ -77,6 +77,11 @@ struct PresetData: Codable {
     }
 }
 
+struct LastPresetMap: Codable {
+    var displays: [String: String]  // displayName -> settingName
+    init() { displays = [:] }
+}
+
 struct UndoState {
     var curves: [Int: [CurvePoint]]
     var tonalBands: [Int: [Double]]
@@ -372,6 +377,81 @@ func installSignalHandlers() {
     signal(SIGINT) { _ in
         CGDisplayRestoreColorSyncSettings()
         exit(0)
+    }
+}
+
+// MARK: - Preset Manager
+
+class PresetManager {
+    static let presetsDir: String = {
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    static let lastPresetPath: String = {
+        let dir = NSString(string: "~/.config/displayctl").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return (dir as NSString).appendingPathComponent("last_preset.json")
+    }()
+
+    static func sanitizeDisplayName(_ name: String) -> String {
+        return name.replacingOccurrences(of: " ", with: "_")
+                   .replacingOccurrences(of: "(", with: "")
+                   .replacingOccurrences(of: ")", with: "")
+    }
+
+    static func listPresets(forDisplay displayName: String) -> [(settingName: String, filename: String)] {
+        let prefix = sanitizeDisplayName(displayName) + "-"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: presetsDir) else { return [] }
+        var results: [(String, String)] = []
+        for file in files.sorted() where file.hasSuffix(".json") && file.hasPrefix(prefix) {
+            let name = String(file.dropFirst(prefix.count).dropLast(5))
+            results.append((name, file))
+        }
+        return results
+    }
+
+    static func loadPreset(filename: String) -> PresetData? {
+        let path = (presetsDir as NSString).appendingPathComponent(filename)
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return try? JSONDecoder().decode(PresetData.self, from: data)
+    }
+
+    static func savePreset(_ preset: PresetData, displayName: String, settingName: String) {
+        let filename = sanitizeDisplayName(displayName) + "-" + settingName + ".json"
+        let path = (presetsDir as NSString).appendingPathComponent(filename)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(preset) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    static func loadLastPresetMap() -> LastPresetMap {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: lastPresetPath)) else {
+            return LastPresetMap()
+        }
+        return (try? JSONDecoder().decode(LastPresetMap.self, from: data)) ?? LastPresetMap()
+    }
+
+    static func saveLastPresetMap(_ map: LastPresetMap) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(map) {
+            try? data.write(to: URL(fileURLWithPath: lastPresetPath))
+        }
+    }
+
+    static func lastSettingName(forDisplay displayName: String) -> String? {
+        let map = loadLastPresetMap()
+        return map.displays[displayName]
+    }
+
+    static func setLastSettingName(_ settingName: String, forDisplay displayName: String) {
+        var map = loadLastPresetMap()
+        map.displays[displayName] = settingName
+        saveLastPresetMap(map)
     }
 }
 
@@ -1036,6 +1116,12 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var gammaSlider: NSSlider!
     var gammaLabel: NSTextField!
 
+    // Preset Dropdown (replaces Save/Load buttons)
+    var presetPopup: NSPopUpButton!
+
+    // Status Bar Item
+    var statusBarItem: NSStatusItem?
+
     let windowWidth: CGFloat = 1100
     let windowHeight: CGFloat = 950
 
@@ -1289,14 +1375,23 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         sep4.boxType = .separator
         cv.addSubview(sep4)
 
+        // Preset dropdown
+        y -= 24
+        let presetHeader = makeLabel("Preset", x: panelX, y: y, width: 60)
+        presetHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        cv.addSubview(presetHeader)
+
+        y -= 28
+        presetPopup = NSPopUpButton(frame: NSRect(x: panelX, y: y, width: panelW, height: 26))
+        presetPopup.target = self
+        presetPopup.action = #selector(presetPopupChanged(_:))
+        cv.addSubview(presetPopup)
+        rebuildPresetDropdown()
+
         // Action buttons
-        y -= 30
+        y -= 32
         let resetBtn = makeActionButton("Reset All", x: panelX, y: y, width: 85, action: #selector(resetAll(_:)))
-        let saveBtn = makeActionButton("Save", x: panelX + 90, y: y, width: 70, action: #selector(savePreset(_:)))
-        let loadBtn = makeActionButton("Load", x: panelX + 165, y: y, width: 70, action: #selector(loadPreset(_:)))
         cv.addSubview(resetBtn)
-        cv.addSubview(saveBtn)
-        cv.addSubview(loadBtn)
 
         y -= 30
         let exportICC = makeActionButton("Export ICC", x: panelX, y: y, width: 110, action: #selector(exportICCAction(_:)))
@@ -1572,6 +1667,142 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         if userHasInteracted && previewOn {
             applyLUT()
         }
+        // Refresh preset dropdown for newly selected display
+        rebuildPresetDropdown()
+    }
+
+    var selectedDisplayName: String {
+        let idx = displayPopup.indexOfSelectedItem
+        if idx >= 0, let title = displayPopup.item(at: idx)?.title {
+            return title
+        }
+        return "Unknown"
+    }
+
+    // MARK: - Preset Dropdown
+
+    func rebuildPresetDropdown() {
+        presetPopup.removeAllItems()
+        let displayName = selectedDisplayName
+        let presets = PresetManager.listPresets(forDisplay: displayName)
+        let lastUsed = PresetManager.lastSettingName(forDisplay: displayName)
+
+        var selectIndex = -1
+        for (i, (settingName, _)) in presets.enumerated() {
+            presetPopup.addItem(withTitle: settingName)
+            if settingName == lastUsed {
+                selectIndex = i
+            }
+        }
+
+        // Separator + Save As New...
+        if !presets.isEmpty {
+            presetPopup.menu?.addItem(NSMenuItem.separator())
+        }
+        let saveItem = NSMenuItem(title: "Save As New...", action: #selector(saveAsNewPreset(_:)), keyEquivalent: "")
+        saveItem.target = self
+        presetPopup.menu?.addItem(saveItem)
+
+        if selectIndex >= 0 {
+            presetPopup.selectItem(at: selectIndex)
+        } else if presets.isEmpty {
+            // No presets — popup shows just "Save As New..."
+        } else {
+            presetPopup.selectItem(at: 0)
+        }
+    }
+
+    @objc func presetPopupChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.selectedItem?.title else { return }
+        if title == "Save As New..." {
+            saveAsNewPreset(sender)
+            return
+        }
+        // Load the selected preset
+        let displayName = selectedDisplayName
+        let prefix = PresetManager.sanitizeDisplayName(displayName)
+        let filename = "\(prefix)-\(title).json"
+        guard let preset = PresetManager.loadPreset(filename: filename) else { return }
+
+        self.curves = preset.curves
+        self.tonalBands = preset.tonalEQ.bands
+        self.whitePointKelvin = preset.whitePointKelvin
+        self.targetGamma = preset.targetGamma ?? 2.2
+
+        self.refreshCurveView()
+        self.kelvinSlider.doubleValue = self.whitePointKelvin
+        self.kelvinLabel.stringValue = String(format: "%.0fK", self.whitePointKelvin)
+        self.gammaSlider.doubleValue = self.targetGamma
+        self.gammaLabel.stringValue = String(format: "%.2f", self.targetGamma)
+
+        for ch in CurveChannel.allCases {
+            if let sliders = self.tonalEQSliders[ch.rawValue],
+               let bands = self.tonalBands[ch.rawValue] {
+                for (i, slider) in sliders.enumerated() where i < bands.count {
+                    slider.doubleValue = bands[i]
+                }
+            }
+            if let labels = self.tonalEQLabels[ch.rawValue],
+               let bands = self.tonalBands[ch.rawValue] {
+                for (i, label) in labels.enumerated() where i < bands.count {
+                    label.stringValue = String(format: "%.2f", bands[i])
+                }
+            }
+        }
+
+        // Track last-used
+        PresetManager.setLastSettingName(title, forDisplay: displayName)
+
+        self.userHasInteracted = true
+        self.pushUndoState()
+        self.applyLUTIfPreviewOn()
+    }
+
+    @objc func saveAsNewPreset(_ sender: Any?) {
+        curves[currentChannel.rawValue] = curveView.points
+
+        let alert = NSAlert()
+        alert.messageText = "Save As New Preset"
+        alert.informativeText = "Enter a setting name for \(selectedDisplayName):"
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        input.stringValue = "my_preset"
+        alert.accessoryView = input
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else {
+            // Reselect the previously active item
+            rebuildPresetDropdown()
+            return
+        }
+
+        let settingName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+        guard !settingName.isEmpty else {
+            rebuildPresetDropdown()
+            return
+        }
+
+        var preset = PresetData()
+        preset.curves = curves
+        preset.tonalEQ.bands = tonalBands
+        preset.whitePointKelvin = whitePointKelvin
+        preset.previewOn = previewOn
+        preset.targetGamma = targetGamma
+
+        let displayName = selectedDisplayName
+        PresetManager.savePreset(preset, displayName: displayName, settingName: settingName)
+        PresetManager.setLastSettingName(settingName, forDisplay: displayName)
+
+        rebuildPresetDropdown()
+
+        let conf = NSAlert()
+        conf.messageText = "Saved"
+        conf.informativeText = "Preset '\(settingName)' saved for \(displayName)"
+        conf.alertStyle = .informational
+        conf.runModal()
     }
 
     // MARK: - Channel Switching (Curves)
@@ -2399,94 +2630,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         pushUndoState()
     }
 
-    // MARK: - Save/Load
-
-    @objc func savePreset(_ sender: Any?) {
-        curves[currentChannel.rawValue] = curveView.points
-
-        let alert = NSAlert()
-        alert.messageText = "Save Preset"
-        alert.informativeText = "Enter a name for this preset:"
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        input.stringValue = "my_preset"
-        alert.accessoryView = input
-
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
-
-        let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-
-        var preset = PresetData()
-        preset.curves = curves
-        preset.tonalEQ.bands = tonalBands
-        preset.whitePointKelvin = whitePointKelvin
-        preset.previewOn = previewOn
-        preset.targetGamma = targetGamma
-
-        let presetsDir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: presetsDir, withIntermediateDirectories: true)
-        let filePath = (presetsDir as NSString).appendingPathComponent("\(name).json")
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(preset) {
-            try? data.write(to: URL(fileURLWithPath: filePath))
-            let conf = NSAlert()
-            conf.messageText = "Saved"
-            conf.informativeText = "Preset saved to \(filePath)"
-            conf.alertStyle = .informational
-            conf.runModal()
-        }
-    }
-
-    @objc func loadPreset(_ sender: Any?) {
-        let openPanel = NSOpenPanel()
-        openPanel.title = "Load Preset"
-        openPanel.allowedContentTypes = [.json]
-        let presetsDir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: presetsDir, withIntermediateDirectories: true)
-        openPanel.directoryURL = URL(fileURLWithPath: presetsDir)
-
-        openPanel.beginSheetModal(for: window) { [weak self] response in
-            guard let self = self, response == .OK, let url = openPanel.url else { return }
-            guard let data = try? Data(contentsOf: url) else { return }
-            guard let preset = try? JSONDecoder().decode(PresetData.self, from: data) else { return }
-
-            self.curves = preset.curves
-            self.tonalBands = preset.tonalEQ.bands
-            self.whitePointKelvin = preset.whitePointKelvin
-            self.targetGamma = preset.targetGamma ?? 2.2
-
-            self.refreshCurveView()
-            self.kelvinSlider.doubleValue = self.whitePointKelvin
-            self.kelvinLabel.stringValue = String(format: "%.0fK", self.whitePointKelvin)
-            self.gammaSlider.doubleValue = self.targetGamma
-            self.gammaLabel.stringValue = String(format: "%.2f", self.targetGamma)
-
-            for ch in CurveChannel.allCases {
-                if let sliders = self.tonalEQSliders[ch.rawValue],
-                   let bands = self.tonalBands[ch.rawValue] {
-                    for (i, slider) in sliders.enumerated() where i < bands.count {
-                        slider.doubleValue = bands[i]
-                    }
-                }
-                if let labels = self.tonalEQLabels[ch.rawValue],
-                   let bands = self.tonalBands[ch.rawValue] {
-                    for (i, label) in labels.enumerated() where i < bands.count {
-                        label.stringValue = String(format: "%.2f", bands[i])
-                    }
-                }
-            }
-
-            self.userHasInteracted = true
-            self.pushUndoState()
-            self.applyLUTIfPreviewOn()
-        }
-    }
+    // MARK: - Save/Load (legacy — now handled by preset dropdown above)
 
     // MARK: - Export ICC
 
@@ -2853,6 +2997,58 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     // MARK: - Window Delegate
 
     func windowWillClose(_ notification: Notification) {
+        // Don't terminate — app stays running in status bar
+        stopDithering()
+        // Note: NOT restoring ColorSync or terminating here.
+        // The status bar icon allows re-showing the window.
+        warmUpTimer?.invalidate()
+    }
+
+    // MARK: - Status Bar Icon
+
+    func setupStatusBarItem() {
+        statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusBarItem?.button {
+            if let img = NSImage(systemSymbolName: "display", accessibilityDescription: "DisplayTuner") {
+                img.isTemplate = true
+                button.image = img
+            } else {
+                button.title = "\u{1F5A5}"
+            }
+        }
+
+        let sbMenu = NSMenu()
+
+        let showItem = NSMenuItem(title: "Show Window", action: #selector(showMainWindow(_:)), keyEquivalent: "")
+        showItem.target = self
+        sbMenu.addItem(showItem)
+
+        let hideItem = NSMenuItem(title: "Hide Window", action: #selector(hideMainWindow(_:)), keyEquivalent: "")
+        hideItem.target = self
+        sbMenu.addItem(hideItem)
+
+        sbMenu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitFromStatusBar(_:)), keyEquivalent: "q")
+        quitItem.target = self
+        sbMenu.addItem(quitItem)
+
+        statusBarItem?.menu = sbMenu
+    }
+
+    @objc func showMainWindow(_ sender: Any?) {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if warmUpTimer == nil || !warmUpTimer!.isValid {
+            startWarmUpTimer()
+        }
+    }
+
+    @objc func hideMainWindow(_ sender: Any?) {
+        window.orderOut(nil)
+    }
+
+    @objc func quitFromStatusBar(_ sender: Any?) {
         stopDithering()
         CGDisplayRestoreColorSyncSettings()
         warmUpTimer?.invalidate()
@@ -2924,12 +3120,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             tunerWindow.makeKeyAndOrderFront(nil)
         }
 
+        // Set up status bar icon
+        controller.setupStatusBarItem()
+
         // Push initial undo state
         controller.pushUndoState()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        return false  // Keep running in status bar when window is closed
     }
 
     func applicationWillTerminate(_ notification: Notification) {
