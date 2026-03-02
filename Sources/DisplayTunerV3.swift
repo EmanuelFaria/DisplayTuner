@@ -1809,6 +1809,18 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         saveItem.target = self
         presetPopup.menu?.addItem(saveItem)
 
+        let renameItem = NSMenuItem(title: "Rename Current...", action: #selector(renameCurrentPreset(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.isEnabled = !presets.isEmpty
+        presetPopup.menu?.addItem(renameItem)
+
+        let deleteItem = NSMenuItem(title: "Delete Current...", action: #selector(deleteCurrentPreset(_:)), keyEquivalent: "")
+        deleteItem.target = self
+        deleteItem.isEnabled = !presets.isEmpty
+        presetPopup.menu?.addItem(deleteItem)
+
+        presetPopup.menu?.addItem(NSMenuItem.separator())
+
         let browseItem = NSMenuItem(title: "Browse...", action: #selector(browsePreset(_:)), keyEquivalent: "")
         browseItem.target = self
         presetPopup.menu?.addItem(browseItem)
@@ -1835,6 +1847,14 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         guard let title = sender.selectedItem?.title else { return }
         if title == "Save As New..." {
             saveAsNewPreset(sender)
+            return
+        }
+        if title == "Rename Current..." {
+            renameCurrentPreset(sender)
+            return
+        }
+        if title == "Delete Current..." {
+            deleteCurrentPreset(sender)
             return
         }
         if title == "Browse..." {
@@ -1892,6 +1912,74 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
         self.pushUndoState()
         self.applyLUT()
+    }
+
+    @objc func renameCurrentPreset(_ sender: Any?) {
+        // Get the currently selected preset name (not Save As New, Browse, etc.)
+        let presets = PresetManager.listPresets(forDisplay: selectedDisplayName)
+        guard !presets.isEmpty else { return }
+
+        // Find current selection
+        let currentIdx = presetPopup.indexOfSelectedItem
+        guard currentIdx >= 0, currentIdx < presets.count else {
+            rebuildPresetDropdown()
+            return
+        }
+        let (oldName, oldFilename) = presets[currentIdx]
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Preset"
+        alert.informativeText = "Current name: \(oldName)"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        input.stringValue = oldName
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let newName = input.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty, newName != oldName else { return }
+
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        let oldPath = (dir as NSString).appendingPathComponent(oldFilename)
+        let prefix = PresetManager.sanitizeDisplayName(selectedDisplayName)
+        let newFilename = "\(prefix)-\(newName).json"
+        let newPath = (dir as NSString).appendingPathComponent(newFilename)
+
+        try? FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
+
+        // Update last-used if it was the renamed one
+        if PresetManager.lastSettingName(forDisplay: selectedDisplayName) == oldName {
+            PresetManager.setLastSettingName(newName, forDisplay: selectedDisplayName)
+        }
+
+        rebuildPresetDropdown()
+    }
+
+    @objc func deleteCurrentPreset(_ sender: Any?) {
+        let presets = PresetManager.listPresets(forDisplay: selectedDisplayName)
+        guard !presets.isEmpty else { return }
+
+        let currentIdx = presetPopup.indexOfSelectedItem
+        guard currentIdx >= 0, currentIdx < presets.count else {
+            rebuildPresetDropdown()
+            return
+        }
+        let (name, filename) = presets[currentIdx]
+
+        let alert = NSAlert()
+        alert.messageText = "Delete Preset?"
+        alert.informativeText = "Are you sure you want to delete \"\(name)\"? This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        let path = (dir as NSString).appendingPathComponent(filename)
+        try? FileManager.default.removeItem(atPath: path)
+
+        rebuildPresetDropdown()
     }
 
     @objc func browsePreset(_ sender: Any?) {
