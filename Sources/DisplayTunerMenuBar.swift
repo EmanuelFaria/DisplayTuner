@@ -386,7 +386,6 @@ class MenuBarController: NSObject {
     // Slider values per display (keyed by display name)
     var brightnessValues: [String: Double] = [:]
     var contrastValues: [String: Double] = [:]
-    var detailValues: [String: Double] = [:]
 
     // Current preset per display
     var currentPresetName: [String: String] = [:]
@@ -398,7 +397,6 @@ class MenuBarController: NSObject {
     var displaySubmenuItem: NSMenuItem!
     var brightnessView: SliderMenuItemView!
     var contrastView: SliderMenuItemView!
-    var detailView: SliderMenuItemView!
     var presetSubmenuItem: NSMenuItem!
 
     // Debounce timer for LUT application
@@ -427,7 +425,6 @@ class MenuBarController: NSObject {
         for d in displays {
             brightnessValues[d.name] = 1.0
             contrastValues[d.name] = 1.0
-            detailValues[d.name] = 0.0
         }
 
         // Auto-load last presets
@@ -506,17 +503,6 @@ class MenuBarController: NSObject {
         contrastItem.view = contrastView
         menu.addItem(contrastItem)
 
-        // Detail slider
-        detailView = SliderMenuItemView(title: "Detail:", minValue: 0.0, maxValue: 1.0, defaultValue: 0.0)
-        detailView.onValueChanged = { [weak self] val in
-            guard let self = self, let d = self.selectedDisplay else { return }
-            self.detailValues[d.name] = val
-            self.scheduleLUTUpdate()
-        }
-        let detailItem = NSMenuItem()
-        detailItem.view = detailView
-        menu.addItem(detailItem)
-
         menu.addItem(NSMenuItem.separator())
 
         // Preset dropdown
@@ -577,6 +563,25 @@ class MenuBarController: NSObject {
         saveItem.target = self
         presetSubmenu.addItem(saveItem)
 
+        let renameItem = NSMenuItem(title: "Rename Current...", action: #selector(renameCurrentPreset(_:)),
+                                     keyEquivalent: "")
+        renameItem.target = self
+        renameItem.isEnabled = !presets.isEmpty && current != nil
+        presetSubmenu.addItem(renameItem)
+
+        let deleteItem = NSMenuItem(title: "Delete Current...", action: #selector(deleteCurrentPreset(_:)),
+                                     keyEquivalent: "")
+        deleteItem.target = self
+        deleteItem.isEnabled = !presets.isEmpty && current != nil
+        presetSubmenu.addItem(deleteItem)
+
+        presetSubmenu.addItem(NSMenuItem.separator())
+
+        let browseItem = NSMenuItem(title: "Browse...", action: #selector(browsePreset(_:)),
+                                     keyEquivalent: "")
+        browseItem.target = self
+        presetSubmenu.addItem(browseItem)
+
         let openFolderItem = NSMenuItem(title: "Open Presets Folder...", action: #selector(openPresetsFolder(_:)),
                                         keyEquivalent: "")
         openFolderItem.target = self
@@ -592,14 +597,11 @@ class MenuBarController: NSObject {
         guard let d = selectedDisplay else { return }
         let b = brightnessValues[d.name] ?? 1.0
         let c = contrastValues[d.name] ?? 1.0
-        let dt = detailValues[d.name] ?? 0.0
 
         brightnessView.slider.doubleValue = b
         brightnessView.valueLabel.stringValue = String(format: "%.2f", b)
         contrastView.slider.doubleValue = c
         contrastView.valueLabel.stringValue = String(format: "%.2f", c)
-        detailView.slider.doubleValue = dt
-        detailView.valueLabel.stringValue = String(format: "%.2f", dt)
     }
 
     // MARK: - Actions
@@ -666,6 +668,98 @@ class MenuBarController: NSObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
+    @objc func renameCurrentPreset(_ sender: Any?) {
+        guard let d = selectedDisplay, let oldName = currentPresetName[d.name] else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Preset"
+        alert.informativeText = "Current name: \(oldName)"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        input.stringValue = oldName
+        alert.accessoryView = input
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+        guard !newName.isEmpty, newName != oldName else { return }
+
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        let prefix = PresetManager.sanitizeDisplayName(d.name)
+        let oldFilename = "\(prefix)-\(oldName).json"
+        let newFilename = "\(prefix)-\(newName).json"
+        let oldPath = (dir as NSString).appendingPathComponent(oldFilename)
+        let newPath = (dir as NSString).appendingPathComponent(newFilename)
+
+        try? FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
+        currentPresetName[d.name] = newName
+        PresetManager.setLastSettingName(newName, forDisplay: d.name)
+        rebuildPresetSubmenu()
+    }
+
+    @objc func deleteCurrentPreset(_ sender: Any?) {
+        guard let d = selectedDisplay, let name = currentPresetName[d.name] else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete Preset?"
+        alert.informativeText = "Are you sure you want to delete \"\(name)\"? This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
+        let prefix = PresetManager.sanitizeDisplayName(d.name)
+        let filename = "\(prefix)-\(name).json"
+        let path = (dir as NSString).appendingPathComponent(filename)
+        try? FileManager.default.removeItem(atPath: path)
+
+        currentPresetName[d.name] = nil
+        loadedPresets[d.name] = nil
+        rebuildPresetSubmenu()
+    }
+
+    @objc func browsePreset(_ sender: Any?) {
+        guard let d = selectedDisplay else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.directoryURL = URL(fileURLWithPath: NSString(string: "~/.config/displayctl/presets").expandingTildeInPath)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Load Preset"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        guard let data = try? Data(contentsOf: url),
+              let preset = try? JSONDecoder().decode(PresetData.self, from: data) else {
+            let alert = NSAlert()
+            alert.messageText = "Failed to load preset"
+            alert.informativeText = "The file could not be parsed as a DisplayTuner preset."
+            alert.runModal()
+            return
+        }
+
+        loadedPresets[d.name] = preset
+
+        // Derive setting name from filename
+        let filename = url.deletingPathExtension().lastPathComponent
+        let prefix = PresetManager.sanitizeDisplayName(d.name) + "-"
+        let settingName = filename.hasPrefix(prefix) ? String(filename.dropFirst(prefix.count)) : filename
+
+        currentPresetName[d.name] = settingName
+        PresetManager.setLastSettingName(settingName, forDisplay: d.name)
+        applyLUTToDisplay(d)
+        rebuildPresetSubmenu()
+    }
+
     @objc func openDisplayTuner(_ sender: Any?) {
         // First try to activate if already running
         let runningApps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "DisplayTuner" || $0.bundleIdentifier == "com.emanuelarruda.displaytuner" }
@@ -705,7 +799,6 @@ class MenuBarController: NSObject {
         currentPresetName[d.name] = nil
         brightnessValues[d.name] = 1.0
         contrastValues[d.name] = 1.0
-        detailValues[d.name] = 0.0
         updateSlidersForSelectedDisplay()
         rebuildPresetSubmenu()
     }
@@ -729,12 +822,10 @@ class MenuBarController: NSObject {
         let preset = loadedPresets[display.name] ?? PresetData()
         let brightness = brightnessValues[display.name] ?? 1.0
         let contrast = contrastValues[display.name] ?? 1.0
-        let detail = detailValues[display.name] ?? 0.0
 
         let (rTable, gTable, bTable) = computeLUT(preset: preset,
                                                     brightness: brightness,
-                                                    contrast: contrast,
-                                                    detail: detail)
+                                                    contrast: contrast)
 
         // SAFETY: reject if any channel peak < 0.1
         guard let rMax = rTable.max(), let gMax = gTable.max(), let bMax = bTable.max(),
@@ -750,7 +841,7 @@ class MenuBarController: NSObject {
         CGSetDisplayTransferByTable(display.id, 256, &r, &g, &b)
     }
 
-    func computeLUT(preset: PresetData, brightness: Double, contrast: Double, detail: Double) -> ([Float], [Float], [Float]) {
+    func computeLUT(preset: PresetData, brightness: Double, contrast: Double) -> ([Float], [Float], [Float]) {
         // Step 1: Interpolate curves from preset
         let masterLUT = monotonicCubicInterpolation(
             points: preset.curves[CurveChannel.master.rawValue] ?? [CurvePoint(x: 0, y: 0), CurvePoint(x: 1, y: 1)],
@@ -878,22 +969,7 @@ class MenuBarController: NSObject {
             }
         }
 
-        // Step 4: Apply detail (pseudo-sharpness) — unsharp-mask-like LUT enhancement
-        // output = input + detail * (input - blurred_input) using 5-sample box blur of LUT
-        if detail > 0.001 {
-            let blurR = boxBlurLUT(baseLUT_R, radius: 18)
-            let blurG = boxBlurLUT(baseLUT_G, radius: 18)
-            let blurB = boxBlurLUT(baseLUT_B, radius: 18)
-            let strength = CGFloat(detail) * 8.0  // amplify effect
-
-            for i in 0..<256 {
-                baseLUT_R[i] = baseLUT_R[i] + strength * (baseLUT_R[i] - blurR[i])
-                baseLUT_G[i] = baseLUT_G[i] + strength * (baseLUT_G[i] - blurG[i])
-                baseLUT_B[i] = baseLUT_B[i] + strength * (baseLUT_B[i] - blurB[i])
-            }
-        }
-
-        // Step 5: Safety clamp
+        // Step 4: Safety clamp
         for i in 0..<256 {
             var r = max(0, min(1, baseLUT_R[i]))
             var g = max(0, min(1, baseLUT_G[i]))
@@ -911,23 +987,6 @@ class MenuBarController: NSObject {
         }
 
         return (rTable, gTable, bTable)
-    }
-
-    func boxBlurLUT(_ lut: [CGFloat], radius: Int) -> [CGFloat] {
-        let count = lut.count
-        var result = [CGFloat](repeating: 0, count: count)
-
-        for i in 0..<count {
-            var sum: CGFloat = 0
-            var samples = 0
-            for j in (i - radius)...(i + radius) {
-                let idx = max(0, min(count - 1, j))
-                sum += lut[idx]
-                samples += 1
-            }
-            result[i] = sum / CGFloat(samples)
-        }
-        return result
     }
 
     func applyTonalEQ(_ value: CGFloat, originalT: CGFloat, bands: [Int: [Double]], channelRaw: Int) -> CGFloat {

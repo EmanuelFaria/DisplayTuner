@@ -5,7 +5,6 @@
 import AppKit
 import CoreGraphics
 import CoreImage
-import ScreenCaptureKit
 import QuartzCore
 import Foundation
 
@@ -1123,15 +1122,12 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var quickBrightnessLabel: NSTextField!
     var quickContrastSlider: NSSlider!
     var quickContrastLabel: NSTextField!
-    var quickDetailStepper: NSStepper!
-    var quickDetailField: NSTextField!
     var quickHueSlider: NSSlider!
     var quickHueLabel: NSTextField!
     var quickSaturationSlider: NSSlider!
     var quickSaturationLabel: NSTextField!
     var quickBrightness: Double = 1.0
     var quickContrast: Double = 1.0
-    var quickDetail: Double = 0.0
     var quickHue: Double = 0.0         // -0.5 to 0.5 (shift in hue space)
     var quickSaturation: Double = 1.0  // 0.0 to 2.0 (1.0 = no change)
 
@@ -1186,7 +1182,21 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         startWarmUpTimer()
 
+        // Re-apply LUT after display reconfiguration (resolution change, wake from sleep, display reconnect)
+        NotificationCenter.default.addObserver(self, selector: #selector(displayReconfigured(_:)),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
         window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func displayReconfigured(_ notification: Notification) {
+        // Re-apply after display settles (resolution switch, wake from sleep, display reconnect)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+            if self.userHasInteracted && self.previewOn {
+                self.applyLUT()
+            }
+        }
     }
 
     // MARK: - Top Bar
@@ -1418,35 +1428,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         quickContrastLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
         quickContrastLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         cv.addSubview(quickContrastLabel)
-
-        y -= 22
-        let dtLabel = makeLabel("Detail:", x: panelX, y: y, width: 70)
-        dtLabel.font = NSFont.systemFont(ofSize: 10)
-        cv.addSubview(dtLabel)
-
-        // Editable number field (2 decimal places)
-        let dtField = NSTextField(frame: NSRect(x: panelX + 72, y: y, width: 60, height: 20))
-        dtField.stringValue = "0.00"
-        dtField.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        dtField.alignment = .center
-        dtField.isBordered = true
-        dtField.isEditable = true
-        dtField.target = self
-        dtField.action = #selector(quickDetailFieldChanged(_:))
-        cv.addSubview(dtField)
-        quickDetailField = dtField
-
-        // Stepper (increment 0.01)
-        let dtStepper = NSStepper(frame: NSRect(x: panelX + 134, y: y, width: 19, height: 20))
-        dtStepper.minValue = 0.0
-        dtStepper.maxValue = 1.0
-        dtStepper.increment = 0.01
-        dtStepper.doubleValue = 0.0
-        dtStepper.valueWraps = false
-        dtStepper.target = self
-        dtStepper.action = #selector(quickDetailStepperChanged(_:))
-        cv.addSubview(dtStepper)
-        quickDetailStepper = dtStepper
 
         y -= 22
         let hueLabel = makeLabel("Hue:", x: panelX, y: y, width: 70)
@@ -1738,7 +1719,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     @objc func displayChanged(_ sender: Any?) {
         // Restore ALL displays to clean state before switching
         stopDithering()
-        stopSharpeningOverlay()
         CGDisplayRestoreColorSyncSettings()
 
         // Lock to the newly selected display
@@ -1760,7 +1740,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 self.targetGamma = preset.targetGamma ?? 2.2
                 self.quickBrightness = 1.0
                 self.quickContrast = 1.0
-                self.quickDetail = 0.0
                 self.quickHue = 0.0
                 self.quickSaturation = 1.0
 
@@ -1773,8 +1752,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 quickBrightnessLabel.stringValue = "1.00"
                 quickContrastSlider.doubleValue = 1.0
                 quickContrastLabel.stringValue = "1.00"
-                quickDetailStepper.doubleValue = 0.0
-                quickDetailField.stringValue = "0.00"
 
                 for ch in CurveChannel.allCases {
                     if let sliders = tonalEQSliders[ch.rawValue],
@@ -1812,7 +1789,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             targetGamma = 2.2
             quickBrightness = 1.0
             quickContrast = 1.0
-            quickDetail = 0.0
             refreshCurveView()
             kelvinSlider.doubleValue = 6500
             kelvinLabel.stringValue = "6500K"
@@ -1822,8 +1798,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             quickBrightnessLabel.stringValue = "1.00"
             quickContrastSlider.doubleValue = 1.0
             quickContrastLabel.stringValue = "1.00"
-            quickDetailStepper.doubleValue = 0.0
-            quickDetailField.stringValue = "0.00"
         }
     }
 
@@ -2461,8 +2435,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             bTable[i] = Float(b)
         }
 
-        // Sharpening is handled by the screen-capture overlay, not the LUT pipeline
-
         return (rTable, gTable, bTable)
     }
 
@@ -3011,29 +2983,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         applyLUTIfPreviewOn()
     }
 
-    @objc func quickDetailStepperChanged(_ sender: NSStepper) {
-        quickDetail = sender.doubleValue
-        quickDetailField.stringValue = String(format: "%.2f", quickDetail)
-        applyDetailOverlay()
-    }
-
-    @objc func quickDetailFieldChanged(_ sender: NSTextField) {
-        if let val = Double(sender.stringValue) {
-            quickDetail = max(0, min(1, val))
-            quickDetailStepper.doubleValue = quickDetail
-            sender.stringValue = String(format: "%.2f", quickDetail)
-            applyDetailOverlay()
-        }
-    }
-
-    func applyDetailOverlay() {
-        if quickDetail > 0.001 {
-            startSharpeningOverlay()
-        } else {
-            stopSharpeningOverlay()
-        }
-    }
-
     @objc func quickHueChanged(_ sender: NSSlider) {
         userHasInteracted = true
         quickHue = sender.doubleValue
@@ -3046,110 +2995,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         quickSaturation = sender.doubleValue
         quickSaturationLabel.stringValue = String(format: "%.2f", quickSaturation)
         applyLUTIfPreviewOn()
-    }
-
-    // MARK: - Screen-Capture Sharpening Overlay
-
-    var sharpenWindow: NSWindow?
-    var sharpenTimer: Timer?
-    var sharpenImageView: NSImageView?
-
-    func startSharpeningOverlay() {
-        guard targetDisplayID != 0 || !displayIDs.isEmpty else { return }
-        let did = targetDisplayID != 0 ? targetDisplayID : selectedDisplayID
-
-        // Find the screen for this display
-        guard let screen = screenForDisplay(did) else { return }
-        let frame = screen.frame
-
-        if sharpenWindow == nil {
-            // Create overlay window covering the target display
-            sharpenWindow = NSWindow(contentRect: frame,
-                                     styleMask: .borderless,
-                                     backing: .buffered, defer: false)
-            sharpenWindow?.level = .screenSaver  // above everything
-            sharpenWindow?.isOpaque = false
-            sharpenWindow?.backgroundColor = .clear
-            sharpenWindow?.ignoresMouseEvents = true  // click-through
-            sharpenWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-            let iv = NSImageView(frame: NSRect(origin: .zero, size: frame.size))
-            iv.imageScaling = .scaleAxesIndependently
-            iv.autoresizingMask = [.width, .height]
-            sharpenWindow?.contentView?.addSubview(iv)
-            sharpenImageView = iv
-        }
-
-        sharpenWindow?.setFrame(frame, display: false)
-        sharpenWindow?.orderFront(nil)
-
-        // Start refresh timer
-        sharpenTimer?.invalidate()
-        sharpenTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
-            self?.captureSharpenAndDisplay()
-        }
-    }
-
-    func stopSharpeningOverlay() {
-        sharpenTimer?.invalidate()
-        sharpenTimer = nil
-        sharpenWindow?.orderOut(nil)
-    }
-
-    func screenForDisplay(_ displayID: CGDirectDisplayID) -> NSScreen? {
-        for screen in NSScreen.screens {
-            if let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
-                if screenNumber == displayID { return screen }
-            }
-        }
-        return NSScreen.screens.first
-    }
-
-    let sharpenContext = CIContext()
-    var scStream: SCStream?
-
-    func captureSharpenAndDisplay() {
-        let did = targetDisplayID != 0 ? targetDisplayID : selectedDisplayID
-        guard let screen = screenForDisplay(did) else { return }
-
-        // Use ScreenCaptureKit for single-frame capture
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
-            guard let self = self, let content = content else { return }
-
-            // Find the display matching our target
-            guard let scDisplay = content.displays.first(where: { $0.displayID == did }) ?? content.displays.first else { return }
-
-            let filter = SCContentFilter(display: scDisplay, excludingWindows: [])
-            let config = SCStreamConfiguration()
-            config.width = scDisplay.width
-            config.height = scDisplay.height
-            config.pixelFormat = kCVPixelFormatType_32BGRA
-            config.showsCursor = false
-
-            // Single screenshot
-            if #available(macOS 14.0, *) {
-                SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { [weak self] cgImage, error in
-                    guard let self = self, let cgImage = cgImage else { return }
-                    self.applySharpenFilter(to: cgImage)
-                }
-            }
-        }
-    }
-
-    func applySharpenFilter(to cgImage: CGImage) {
-        let ciImage = CIImage(cgImage: cgImage)
-        let filter = CIFilter(name: "CIUnsharpMask")!
-        filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(quickDetail * 0.08, forKey: kCIInputIntensityKey)   // 0-0.08 (very subtle)
-        filter.setValue(quickDetail * 0.5 + 0.2, forKey: kCIInputRadiusKey)  // 0.2-0.7 pixels
-
-        guard let outputImage = filter.outputImage else { return }
-        guard let sharpCG = sharpenContext.createCGImage(outputImage, from: ciImage.extent) else { return }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.sharpenImageView?.image = NSImage(cgImage: sharpCG,
-                                                     size: NSSize(width: cgImage.width, height: cgImage.height))
-        }
     }
 
     // MARK: - Reset
@@ -3197,7 +3042,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         gammaLabel.stringValue = "2.20"
 
         stopDithering()
-        stopSharpeningOverlay()
         CGDisplayRestoreColorSyncSettings()
 
         undoStack.removeAll()
@@ -3600,7 +3444,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
     @objc func quitFromStatusBar(_ sender: Any?) {
         stopDithering()
-        stopSharpeningOverlay()
         CGDisplayRestoreColorSyncSettings()
         warmUpTimer?.invalidate()
         NSApp.terminate(nil)
