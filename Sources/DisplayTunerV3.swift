@@ -401,6 +401,11 @@ class PresetManager {
                    .replacingOccurrences(of: ")", with: "")
     }
 
+    /// Sanitize user-supplied setting names to prevent path traversal (alphanumeric + underscore + hyphen only)
+    static func sanitizeSettingName(_ name: String) -> String {
+        return String(name.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+    }
+
     static func listPresets(forDisplay displayName: String) -> [(settingName: String, filename: String)] {
         let prefix = sanitizeDisplayName(displayName) + "-"
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: presetsDir) else { return [] }
@@ -1167,9 +1172,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
     // Preset Dropdown (replaces Save/Load buttons)
     var presetPopup: NSPopUpButton!
-
-    // Status Bar Item
-    var statusBarItem: NSStatusItem?
 
     let windowWidth: CGFloat = 1100
     let windowHeight: CGFloat = 950
@@ -1948,8 +1950,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     }
 
     @objc func openPresetsFolder(_ sender: Any?) {
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+        NSWorkspace.shared.open(URL(fileURLWithPath: PresetManager.presetsDir))
     }
 
     @objc func presetPopupChanged(_ sender: NSPopUpButton) {
@@ -1968,11 +1969,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
         if title == "Browse..." {
             browsePreset(sender)
-            rebuildPresetDropdown()
-            return
-        }
-        if title == "Open Presets Folder..." {  // legacy — now a button
-            openPresetsFolder(sender)
             rebuildPresetDropdown()
             return
         }
@@ -2067,14 +2063,14 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let newName = input.stringValue.trimmingCharacters(in: .whitespaces)
+        let newName = PresetManager.sanitizeSettingName(
+            input.stringValue.trimmingCharacters(in: .whitespaces))
         guard !newName.isEmpty, newName != oldName else { return }
 
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        let oldPath = (dir as NSString).appendingPathComponent(oldFilename)
+        let oldPath = (PresetManager.presetsDir as NSString).appendingPathComponent(oldFilename)
         let prefix = PresetManager.sanitizeDisplayName(selectedDisplayName)
         let newFilename = "\(prefix)-\(newName).json"
-        let newPath = (dir as NSString).appendingPathComponent(newFilename)
+        let newPath = (PresetManager.presetsDir as NSString).appendingPathComponent(newFilename)
 
         try? FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
 
@@ -2105,10 +2101,10 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        let path = (dir as NSString).appendingPathComponent(filename)
+        let path = (PresetManager.presetsDir as NSString).appendingPathComponent(filename)
         try? FileManager.default.removeItem(atPath: path)
 
+        PresetManager.setLastSettingName("", forDisplay: selectedDisplayName)
         rebuildPresetDropdown()
     }
 
@@ -2188,8 +2184,9 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             return
         }
 
-        let settingName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: " ", with: "_")
+        let settingName = PresetManager.sanitizeSettingName(
+            input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: " ", with: "_"))
         guard !settingName.isEmpty else {
             rebuildPresetDropdown()
             return
@@ -2391,11 +2388,11 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             // Step 1: Master
             let afterMaster = masterLUT[i]
 
-            // Step 2: Per-channel RGB
-            let rIdx = min(255, max(0, Int(afterMaster * 255.0)))
-            var r = redLUT[rIdx]
-            var g = greenLUT[rIdx]
-            var b = blueLUT[rIdx]
+            // Step 2: Per-channel RGB (shared master lookup index for all three channels)
+            let masterIdx = min(255, max(0, Int(afterMaster * 255.0)))
+            var r = redLUT[masterIdx]
+            var g = greenLUT[masterIdx]
+            var b = blueLUT[masterIdx]
 
             // Step 3: CMYK deltas
             let identity = t
@@ -2507,7 +2504,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             g = max(0, min(1, g))
             b = max(0, min(1, b))
 
-            // Step 10: Safety clamp min 0.03 for indices > 0
+            // Step 11: Safety clamp min 0.03 for indices > 0
             if i > 0 {
                 r = max(0.03, r)
                 g = max(0.03, g)
@@ -2566,12 +2563,11 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             return
         }
 
-        // SAFETY: clamp minimum to 0.03 for indices > 0
-        var r = rTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
-        var g = gTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
-        var b = bTable.enumerated().map { $0.offset == 0 ? $0.element : max(0.03, $0.element) }
+        // Store for temporal dithering (safety clamp already applied in computeFinalLUT)
+        var r = rTable
+        var g = gTable
+        var b = bTable
 
-        // Store for temporal dithering
         lastRTable = r
         lastGTable = g
         lastBTable = b
@@ -2615,22 +2611,26 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let useFloor = (ditheringFrame % 2 == 0)
 
         guard targetDisplayID != 0 else { return }  // SAFETY: don't dither until display is locked
-        let did = targetDisplayID
-        var r = lastRTable
-        var g = lastGTable
-        var b = lastBTable
 
-        if !useFloor {
-            // Ceil variant: add 0.5/255 to fractional entries
-            let step = Float(0.5 / 255.0)
-            for i in 0..<256 {
-                r[i] = min(1.0, r[i] + step)
-                g[i] = min(1.0, g[i] + step)
-                b[i] = min(1.0, b[i] + step)
+        // Dispatch to main queue to avoid race condition with applyLUT writing lastRTable/lastGTable/lastBTable
+        DispatchQueue.main.async { [self] in
+            let did = targetDisplayID
+            var r = lastRTable
+            var g = lastGTable
+            var b = lastBTable
+
+            if !useFloor {
+                // Ceil variant: add 0.5/255 to fractional entries
+                let step = Float(0.5 / 255.0)
+                for i in 0..<256 {
+                    r[i] = min(1.0, r[i] + step)
+                    g[i] = min(1.0, g[i] + step)
+                    b[i] = min(1.0, b[i] + step)
+                }
             }
-        }
 
-        CGSetDisplayTransferByTable(did, 256, &r, &g, &b)
+            CGSetDisplayTransferByTable(did, 256, &r, &g, &b)
+        }
     }
 
     @objc func toggleDithering(_ sender: NSButton) {
@@ -3133,8 +3133,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         pushUndoState()
     }
 
-    // MARK: - Save/Load (legacy — now handled by preset dropdown above)
-
     // MARK: - Export ICC
 
     @objc func exportICCAction(_ sender: Any?) {
@@ -3307,7 +3305,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         // bXYZ
         let bXYZOffset = UInt32(data.count)
         appendString("XYZ ", length: 4); appendUInt32(0)
-        appendS15Fixed16(0.1430804); appendS15Fixed16(0.0606169); appendS15Fixed16(0.7141633)
+        appendS15Fixed16(0.1430804); appendS15Fixed16(0.0606169); appendS15Fixed16(0.7141733)
         padTo4()
         let bXYZSize = UInt32(data.count) - bXYZOffset
 
@@ -3528,36 +3526,12 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         warmUpTimer?.invalidate()
     }
 
-    // MARK: - Status Bar Icon
-
-    func setupStatusBarItem() {
-        // Status bar is handled by the DisplayTunerMenuBar daemon
-        // No separate icon from the main app
-    }
-
-    @objc func showMainWindow(_ sender: Any?) {
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        if warmUpTimer == nil || !warmUpTimer!.isValid {
-            startWarmUpTimer()
-        }
-    }
-
-    @objc func hideMainWindow(_ sender: Any?) {
-        window.orderOut(nil)
-    }
-
     @objc func quitFromStatusBar(_ sender: Any?) {
         stopDithering()
         CGDisplayRestoreColorSyncSettings()
         warmUpTimer?.invalidate()
         NSApp.terminate(nil)
     }
-
-    // MARK: - Keyboard Shortcuts (via responder chain)
-
-    @objc func performUndo(_ sender: Any?) { undoAction(sender) }
-    @objc func performRedo(_ sender: Any?) { redoAction(sender) }
 }
 
 // MARK: - Custom Window for Space Key
@@ -3618,9 +3592,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             tunerWindow.center()
             tunerWindow.makeKeyAndOrderFront(nil)
         }
-
-        // Set up status bar icon
-        controller.setupStatusBarItem()
 
         // Push initial undo state
         controller.pushUndoState()

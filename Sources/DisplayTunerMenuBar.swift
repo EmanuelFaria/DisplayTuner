@@ -247,6 +247,11 @@ class PresetManager {
                    .replacingOccurrences(of: ")", with: "")
     }
 
+    /// Sanitize user-supplied setting names to prevent path traversal (alphanumeric + underscore + hyphen only)
+    static func sanitizeSettingName(_ name: String) -> String {
+        return String(name.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+    }
+
     static func listPresets(forDisplay displayName: String) -> [(settingName: String, filename: String)] {
         let prefix = sanitizeDisplayName(displayName) + "-"
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: presetsDir) else { return [] }
@@ -673,8 +678,9 @@ class MenuBarController: NSObject {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
-        let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: " ", with: "_")
+        let name = PresetManager.sanitizeSettingName(
+            input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: " ", with: "_"))
         guard !name.isEmpty else { return }
 
         // Build preset from current state
@@ -688,8 +694,7 @@ class MenuBarController: NSObject {
     }
 
     @objc func openPresetsFolder(_ sender: Any?) {
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
-        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+        NSWorkspace.shared.open(URL(fileURLWithPath: PresetManager.presetsDir))
     }
 
     @objc func renameCurrentPreset(_ sender: Any?) {
@@ -708,16 +713,16 @@ class MenuBarController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: " ", with: "_")
+        let newName = PresetManager.sanitizeSettingName(
+            input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: " ", with: "_"))
         guard !newName.isEmpty, newName != oldName else { return }
 
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
         let prefix = PresetManager.sanitizeDisplayName(d.name)
         let oldFilename = "\(prefix)-\(oldName).json"
         let newFilename = "\(prefix)-\(newName).json"
-        let oldPath = (dir as NSString).appendingPathComponent(oldFilename)
-        let newPath = (dir as NSString).appendingPathComponent(newFilename)
+        let oldPath = (PresetManager.presetsDir as NSString).appendingPathComponent(oldFilename)
+        let newPath = (PresetManager.presetsDir as NSString).appendingPathComponent(newFilename)
 
         try? FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
         currentPresetName[d.name] = newName
@@ -738,14 +743,14 @@ class MenuBarController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let dir = NSString(string: "~/.config/displayctl/presets").expandingTildeInPath
         let prefix = PresetManager.sanitizeDisplayName(d.name)
         let filename = "\(prefix)-\(name).json"
-        let path = (dir as NSString).appendingPathComponent(filename)
+        let path = (PresetManager.presetsDir as NSString).appendingPathComponent(filename)
         try? FileManager.default.removeItem(atPath: path)
 
         currentPresetName[d.name] = nil
         loadedPresets[d.name] = nil
+        PresetManager.setLastSettingName("", forDisplay: d.name)
         rebuildPresetSubmenu()
     }
 
@@ -913,11 +918,11 @@ class MenuBarController: NSObject {
             // Master curve
             let afterMaster = masterLUT[i]
 
-            // Per-channel RGB
-            let rIdx = min(255, max(0, Int(afterMaster * 255.0)))
-            var r = redLUT[rIdx]
-            var g = greenLUT[rIdx]
-            var b = blueLUT[rIdx]
+            // Per-channel RGB (shared master lookup index for all three channels)
+            let masterIdx = min(255, max(0, Int(afterMaster * 255.0)))
+            var r = redLUT[masterIdx]
+            var g = greenLUT[masterIdx]
+            var b = blueLUT[masterIdx]
 
             // CMYK deltas
             let identity = t
@@ -1042,6 +1047,7 @@ class MenuBarController: NSObject {
 
 extension MenuBarController: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
+        guard brightnessView != nil else { return }
         // Refresh display list in case displays changed
         let newDisplays = getOnlineDisplays()
         if newDisplays.count != displays.count {
