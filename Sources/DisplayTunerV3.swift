@@ -1537,6 +1537,10 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let testBtn = makeActionButton("Test Patterns", x: panelX + 115, y: y, width: 130, action: #selector(showTestPatterns(_:)))
         cv.addSubview(exportCube)
         cv.addSubview(testBtn)
+
+        y -= 30
+        let menuBarBtn = makeActionButton("Launch Menu Bar App", x: panelX, y: y, width: panelW, action: #selector(launchMenuBarApp(_:)))
+        cv.addSubview(menuBarBtn)
     }
 
     func buildTonalSlidersForChannel(_ ch: CurveChannel) {
@@ -3353,6 +3357,27 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     @objc func showTestPatterns(_ sender: Any?) {
         testPatternController.mainController = self
         testPatternController.showWindow()
+    }
+
+    @objc func launchMenuBarApp(_ sender: Any?) {
+        // Check if already running
+        let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.emanuelarruda.displaytunermenubar" || $0.localizedName == "DisplayTunerMenuBar" }
+        if running { return }
+
+        // Try paths in order
+        let paths = [
+            (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/DisplayTunerMenuBar",
+            NSString(string: "~/github/DisplayTuner/DisplayTunerMenuBar").expandingTildeInPath,
+            NSString(string: "~/.claude/bin/DisplayTunerMenuBar").expandingTildeInPath,
+        ]
+        for path in paths {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: path)
+                try? proc.run()
+                return
+            }
+        }
     }
 
     // MARK: - Warm-Up Timer
