@@ -1045,6 +1045,26 @@ class TestPatternController: NSObject, NSWindowDelegate {
     }
 }
 
+// MARK: - Display Name Resolution
+
+/// Get a friendly display name via NSScreen.localizedName, with fallbacks for known displays.
+func getDisplayName(for displayID: CGDirectDisplayID, width: Int, height: Int) -> String {
+    // Try NSScreen.localizedName first (matches by CGDirectDisplayID)
+    for screen in NSScreen.screens {
+        if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+           num == displayID {
+            let name = screen.localizedName
+            if name != "Unknown" && !name.isEmpty {
+                return name
+            }
+        }
+    }
+    // Fallback for known displays where NSScreen returns "Unknown"
+    if width == 2560 && height == 1600 { return "Cinema HD" }
+    if width == 3840 && height == 2400 { return "Cinema HD" }  // BetterDisplay virtual resolution
+    return "\(width)x\(height)"
+}
+
 // MARK: - Main Controller
 
 class DisplayTunerController: NSObject, NSWindowDelegate {
@@ -1660,21 +1680,28 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         displayIDs = []
         var selectedIndex = 0
+        var itemIndex = 0
         for i in 0..<Int(displayCount) {
             let did = onlineDisplays[i]
-            displayIDs.append(did)
             let w = CGDisplayPixelsWide(did)
             let h = CGDisplayPixelsHigh(did)
+            let friendlyName = getDisplayName(for: did, width: w, height: h)
+
+            // Filter out BetterDisplay virtual screens
+            if friendlyName.contains("Virtual") { continue }
+
+            displayIDs.append(did)
             let isMain = CGDisplayIsMain(did) != 0
-            var label = "\(w)x\(h)"
+            var label = friendlyName
             if isMain { label += " (Main)" }
-            if w == 2560 && h == 1600 {
-                label = "Cinema HD \(w)x\(h)"
-                selectedIndex = i
+            // Default selection: prefer Cinema HD, otherwise first display
+            if friendlyName == "Cinema HD" {
+                selectedIndex = itemIndex
             }
             displayPopup.addItem(withTitle: label)
             // Store the resolution-only name for preset matching
             displayPopup.lastItem?.representedObject = "\(w)x\(h)" as NSString
+            itemIndex += 1
         }
         if displayIDs.count > selectedIndex {
             displayPopup.selectItem(at: selectedIndex)
@@ -1689,19 +1716,26 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         referenceDisplayIDs = []
         var selectedIndex = 0
+        var itemIndex = 0
         for i in 0..<Int(displayCount) {
             let did = onlineDisplays[i]
-            referenceDisplayIDs.append(did)
             let w = CGDisplayPixelsWide(did)
             let h = CGDisplayPixelsHigh(did)
+            let friendlyName = getDisplayName(for: did, width: w, height: h)
+
+            // Filter out BetterDisplay virtual screens
+            if friendlyName.contains("Virtual") { continue }
+
+            referenceDisplayIDs.append(did)
             let isMain = CGDisplayIsMain(did) != 0
-            var name = "\(w)x\(h)"
-            if isMain { name += " (Main)" }
+            var label = friendlyName
+            if isMain { label += " (Main)" }
             // Default to the non-Cinema HD display as reference (the Samsung or main display)
-            if !(w == 2560 && h == 1600) {
-                selectedIndex = i
+            if friendlyName != "Cinema HD" {
+                selectedIndex = itemIndex
             }
-            referenceDisplayPopup.addItem(withTitle: name)
+            referenceDisplayPopup.addItem(withTitle: label)
+            itemIndex += 1
         }
         if referenceDisplayIDs.count > selectedIndex {
             referenceDisplayPopup.selectItem(at: selectedIndex)
@@ -1810,6 +1844,15 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         if idx >= 0, let obj = displayPopup.item(at: idx)?.representedObject as? String {
             return obj  // resolution-only: "2560x1600"
         }
+        if idx >= 0, let title = displayPopup.item(at: idx)?.title {
+            return title
+        }
+        return "Unknown"
+    }
+
+    /// Friendly display name for UI messages (e.g. "SAMSUNG (Main)", "Cinema HD")
+    var selectedDisplayLabel: String {
+        let idx = displayPopup.indexOfSelectedItem
         if idx >= 0, let title = displayPopup.item(at: idx)?.title {
             return title
         }
@@ -2093,7 +2136,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Save As New Preset"
-        alert.informativeText = "Enter a setting name for \(selectedDisplayName):"
+        alert.informativeText = "Enter a setting name for \(selectedDisplayLabel):"
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
@@ -2130,7 +2173,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
 
         let conf = NSAlert()
         conf.messageText = "Saved"
-        conf.informativeText = "Preset '\(settingName)' saved for \(displayName)"
+        conf.informativeText = "Preset '\(settingName)' saved for \(selectedDisplayLabel)"
         conf.alertStyle = .informational
         conf.runModal()
     }

@@ -305,10 +305,29 @@ class PresetManager {
 
 struct DisplayInfo {
     let id: CGDirectDisplayID
-    let name: String
+    let name: String   // Resolution-based (e.g. "3840x2160") — used for preset file matching
+    let label: String  // Friendly name (e.g. "SAMSUNG", "Cinema HD") — used for UI display
     let width: Int
     let height: Int
     let isMain: Bool
+}
+
+/// Get a friendly display name via NSScreen.localizedName, with fallbacks for known displays.
+func getDisplayName(for displayID: CGDirectDisplayID, width: Int, height: Int) -> String {
+    // Try NSScreen.localizedName first (matches by CGDirectDisplayID)
+    for screen in NSScreen.screens {
+        if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+           num == displayID {
+            let name = screen.localizedName
+            if name != "Unknown" && !name.isEmpty {
+                return name
+            }
+        }
+    }
+    // Fallback for known displays where NSScreen returns "Unknown"
+    if width == 2560 && height == 1600 { return "Cinema HD" }
+    if width == 3840 && height == 2400 { return "Cinema HD" }  // BetterDisplay virtual resolution
+    return "\(width)x\(height)"
 }
 
 func getOnlineDisplays() -> [DisplayInfo] {
@@ -322,9 +341,14 @@ func getOnlineDisplays() -> [DisplayInfo] {
         let w = CGDisplayPixelsWide(did)
         let h = CGDisplayPixelsHigh(did)
         let isMain = CGDisplayIsMain(did) != 0
+        let friendlyName = getDisplayName(for: did, width: w, height: h)
+
+        // Filter out BetterDisplay virtual screens
+        if friendlyName.contains("Virtual") { continue }
+
         // Use resolution-only name for preset matching (must match file prefix format)
         let name = "\(w)x\(h)"
-        results.append(DisplayInfo(id: did, name: name, width: w, height: h, isMain: isMain))
+        results.append(DisplayInfo(id: did, name: name, label: friendlyName, width: w, height: h, isMain: isMain))
     }
     return results
 }
@@ -467,11 +491,11 @@ class MenuBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         // Display selector
-        displaySubmenuItem = NSMenuItem(title: "Display: \(selectedDisplay?.name ?? "None")",
+        displaySubmenuItem = NSMenuItem(title: "Display: \(selectedDisplay?.label ?? "None")",
                                         action: nil, keyEquivalent: "")
         let displaySubmenu = NSMenu()
         for (i, d) in displays.enumerated() {
-            let item = NSMenuItem(title: d.name, action: #selector(selectDisplay(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: d.label, action: #selector(selectDisplay(_:)), keyEquivalent: "")
             item.target = self
             item.tag = i
             if i == selectedDisplayIndex { item.state = .on }
@@ -614,7 +638,7 @@ class MenuBarController: NSObject {
                 item.state = item.tag == sender.tag ? .on : .off
             }
         }
-        displaySubmenuItem.title = "Display: \(selectedDisplay?.name ?? "None")"
+        displaySubmenuItem.title = "Display: \(selectedDisplay?.label ?? "None")"
         updateSlidersForSelectedDisplay()
         rebuildPresetSubmenu()
     }
@@ -637,7 +661,7 @@ class MenuBarController: NSObject {
 
         let alert = NSAlert()
         alert.messageText = "Save Preset"
-        alert.informativeText = "Enter a name for this preset (for \(d.name)):"
+        alert.informativeText = "Enter a name for this preset (for \(d.label)):"
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
