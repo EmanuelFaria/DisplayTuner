@@ -412,6 +412,16 @@ class PresetManager {
         return results
     }
 
+    static func listAllPresets() -> [(settingName: String, filename: String)] {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: presetsDir) else { return [] }
+        var results: [(String, String)] = []
+        for file in files.sorted() where file.hasSuffix(".json") {
+            let name = String(file.dropLast(5))  // strip .json
+            results.append((name, file))
+        }
+        return results
+    }
+
     static func loadPreset(filename: String) -> PresetData? {
         let path = (presetsDir as NSString).appendingPathComponent(filename)
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
@@ -1875,16 +1885,34 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     func rebuildPresetDropdown() {
         presetPopup.removeAllItems()
         let displayName = selectedDisplayName
-        let presets = PresetManager.listPresets(forDisplay: displayName)
+        let matchingPresets = PresetManager.listPresets(forDisplay: displayName)
+        let allPresets = PresetManager.listAllPresets()
         let lastUsed = PresetManager.lastSettingName(forDisplay: displayName)
+        let matchingFilenames = Set(matchingPresets.map { $0.filename })
 
         var selectIndex = -1
-        for (i, (settingName, _)) in presets.enumerated() {
+        var itemCount = 0
+
+        // First: display-specific presets
+        for (settingName, _) in matchingPresets {
             presetPopup.addItem(withTitle: settingName)
-            if settingName == lastUsed {
-                selectIndex = i
-            }
+            if settingName == lastUsed { selectIndex = itemCount }
+            itemCount += 1
         }
+
+        // Separator + other presets
+        let otherPresets = allPresets.filter { !matchingFilenames.contains($0.filename) }
+        if !otherPresets.isEmpty && !matchingPresets.isEmpty {
+            presetPopup.menu?.addItem(NSMenuItem.separator())
+            itemCount += 1  // separator counts as an item
+        }
+        for (settingName, _) in otherPresets {
+            presetPopup.addItem(withTitle: settingName)
+            if settingName == lastUsed { selectIndex = itemCount }
+            itemCount += 1
+        }
+
+        let presets = matchingPresets + otherPresets
 
         // Separator + Save As New...
         if !presets.isEmpty {
@@ -1948,11 +1976,13 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             rebuildPresetDropdown()
             return
         }
-        // Load the selected preset
+        // Load the selected preset — try display-prefixed name first, then raw title
         let displayName = selectedDisplayName
         let prefix = PresetManager.sanitizeDisplayName(displayName)
-        let filename = "\(prefix)-\(title).json"
-        guard let preset = PresetManager.loadPreset(filename: filename) else {
+        let prefixedFilename = "\(prefix)-\(title).json"
+        let rawFilename = "\(title).json"
+        let preset: PresetData? = PresetManager.loadPreset(filename: prefixedFilename) ?? PresetManager.loadPreset(filename: rawFilename)
+        guard let preset = preset else {
             // Show error — don't fail silently
             let alert = NSAlert()
             alert.messageText = "Could not load preset"
