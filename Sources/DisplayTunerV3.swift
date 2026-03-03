@@ -1125,9 +1125,15 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var quickContrastLabel: NSTextField!
     var quickDetailSlider: NSSlider!
     var quickDetailLabel: NSTextField!
+    var quickHueSlider: NSSlider!
+    var quickHueLabel: NSTextField!
+    var quickSaturationSlider: NSSlider!
+    var quickSaturationLabel: NSTextField!
     var quickBrightness: Double = 1.0
     var quickContrast: Double = 1.0
     var quickDetail: Double = 0.0
+    var quickHue: Double = 0.0         // -0.5 to 0.5 (shift in hue space)
+    var quickSaturation: Double = 1.0  // 0.0 to 2.0 (1.0 = no change)
 
     // Preset Dropdown (replaces Save/Load buttons)
     var presetPopup: NSPopUpButton!
@@ -1425,6 +1431,30 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         quickDetailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         cv.addSubview(quickDetailLabel)
 
+        y -= 22
+        let hueLabel = makeLabel("Hue:", x: panelX, y: y, width: 70)
+        hueLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(hueLabel)
+        let hueSlider = NSSlider(value: 0.0, minValue: -0.5, maxValue: 0.5, target: self, action: #selector(quickHueChanged(_:)))
+        hueSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(hueSlider)
+        quickHueSlider = hueSlider
+        quickHueLabel = makeLabel("0.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickHueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickHueLabel)
+
+        y -= 22
+        let satLabel = makeLabel("Saturation:", x: panelX, y: y, width: 70)
+        satLabel.font = NSFont.systemFont(ofSize: 10)
+        cv.addSubview(satLabel)
+        let satSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: 2.0, target: self, action: #selector(quickSaturationChanged(_:)))
+        satSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
+        cv.addSubview(satSlider)
+        quickSaturationSlider = satSlider
+        quickSaturationLabel = makeLabel("1.00", x: panelX + panelW - 35, y: y, width: 35)
+        quickSaturationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        cv.addSubview(quickSaturationLabel)
+
         // --- Separator ---
         y -= 14
         let sep4 = NSBox(frame: NSRect(x: panelX, y: y, width: panelW, height: 1))
@@ -1714,6 +1744,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 self.quickBrightness = 1.0
                 self.quickContrast = 1.0
                 self.quickDetail = 0.0
+                self.quickHue = 0.0
+                self.quickSaturation = 1.0
 
                 refreshCurveView()
                 kelvinSlider.doubleValue = whitePointKelvin
@@ -2349,7 +2381,53 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 b = max(0, min(1, 0.5 + (b - 0.5) * CGFloat(quickContrast)))
             }
 
-            // Step 9: Clamp 0-1
+            // Step 9: Hue and Saturation (RGB→HSL→adjust→RGB)
+            if abs(quickHue) > 0.001 || abs(quickSaturation - 1.0) > 0.001 {
+                // RGB to HSL
+                let maxC = max(r, g, b)
+                let minC = min(r, g, b)
+                let delta = maxC - minC
+                var h: CGFloat = 0
+                var s: CGFloat = 0
+                let l = (maxC + minC) / 2.0
+
+                if delta > 0.0001 {
+                    s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC)
+                    if maxC == r { h = ((g - b) / delta).truncatingRemainder(dividingBy: 6.0) }
+                    else if maxC == g { h = (b - r) / delta + 2.0 }
+                    else { h = (r - g) / delta + 4.0 }
+                    h /= 6.0
+                    if h < 0 { h += 1.0 }
+                }
+
+                // Apply adjustments
+                h += CGFloat(quickHue)
+                if h > 1.0 { h -= 1.0 }
+                if h < 0.0 { h += 1.0 }
+                s = max(0, min(1, s * CGFloat(quickSaturation)))
+
+                // HSL to RGB
+                if s < 0.0001 {
+                    r = l; g = l; b = l
+                } else {
+                    let q = l < 0.5 ? l * (1 + s) : l + s - l * s
+                    let p = 2.0 * l - q
+                    func hue2rgb(_ p: CGFloat, _ q: CGFloat, _ t: CGFloat) -> CGFloat {
+                        var t = t
+                        if t < 0 { t += 1 }
+                        if t > 1 { t -= 1 }
+                        if t < 1.0/6.0 { return p + (q - p) * 6.0 * t }
+                        if t < 1.0/2.0 { return q }
+                        if t < 2.0/3.0 { return p + (q - p) * (2.0/3.0 - t) * 6.0 }
+                        return p
+                    }
+                    r = hue2rgb(p, q, h + 1.0/3.0)
+                    g = hue2rgb(p, q, h)
+                    b = hue2rgb(p, q, h - 1.0/3.0)
+                }
+            }
+
+            // Step 10: Clamp 0-1
             r = max(0, min(1, r))
             g = max(0, min(1, g))
             b = max(0, min(1, b))
@@ -2926,6 +3004,20 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         }
     }
 
+    @objc func quickHueChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        quickHue = sender.doubleValue
+        quickHueLabel.stringValue = String(format: "%.2f", quickHue)
+        applyLUTIfPreviewOn()
+    }
+
+    @objc func quickSaturationChanged(_ sender: NSSlider) {
+        userHasInteracted = true
+        quickSaturation = sender.doubleValue
+        quickSaturationLabel.stringValue = String(format: "%.2f", quickSaturation)
+        applyLUTIfPreviewOn()
+    }
+
     // MARK: - Screen-Capture Sharpening Overlay
 
     var sharpenWindow: NSWindow?
@@ -3018,8 +3110,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let ciImage = CIImage(cgImage: cgImage)
         let filter = CIFilter(name: "CIUnsharpMask")!
         filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(quickDetail * 0.8, forKey: kCIInputIntensityKey)   // 0-0.8 (subtle to moderate)
-        filter.setValue(quickDetail * 1.5 + 0.3, forKey: kCIInputRadiusKey)  // 0.3-1.8 pixels
+        filter.setValue(quickDetail * 0.08, forKey: kCIInputIntensityKey)   // 0-0.08 (very subtle)
+        filter.setValue(quickDetail * 0.5 + 0.2, forKey: kCIInputRadiusKey)  // 0.2-0.7 pixels
 
         guard let outputImage = filter.outputImage else { return }
         guard let sharpCG = sharpenContext.createCGImage(outputImage, from: ciImage.extent) else { return }
