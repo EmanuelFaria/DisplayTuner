@@ -1123,8 +1123,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
     var quickBrightnessLabel: NSTextField!
     var quickContrastSlider: NSSlider!
     var quickContrastLabel: NSTextField!
-    var quickDetailSlider: NSSlider!
-    var quickDetailLabel: NSTextField!
+    var quickDetailStepper: NSStepper!
+    var quickDetailField: NSTextField!
     var quickHueSlider: NSSlider!
     var quickHueLabel: NSTextField!
     var quickSaturationSlider: NSSlider!
@@ -1423,13 +1423,30 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let dtLabel = makeLabel("Detail:", x: panelX, y: y, width: 70)
         dtLabel.font = NSFont.systemFont(ofSize: 10)
         cv.addSubview(dtLabel)
-        let dtSlider = NSSlider(value: 0.0, minValue: 0.0, maxValue: 1.0, target: self, action: #selector(quickDetailChanged(_:)))
-        dtSlider.frame = NSRect(x: panelX + 72, y: y, width: panelW - 110, height: 18)
-        cv.addSubview(dtSlider)
-        quickDetailSlider = dtSlider
-        quickDetailLabel = makeLabel("0.00", x: panelX + panelW - 35, y: y, width: 35)
-        quickDetailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        cv.addSubview(quickDetailLabel)
+
+        // Editable number field (2 decimal places)
+        let dtField = NSTextField(frame: NSRect(x: panelX + 72, y: y, width: 60, height: 20))
+        dtField.stringValue = "0.00"
+        dtField.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        dtField.alignment = .center
+        dtField.isBordered = true
+        dtField.isEditable = true
+        dtField.target = self
+        dtField.action = #selector(quickDetailFieldChanged(_:))
+        cv.addSubview(dtField)
+        quickDetailField = dtField
+
+        // Stepper (increment 0.01)
+        let dtStepper = NSStepper(frame: NSRect(x: panelX + 134, y: y, width: 19, height: 20))
+        dtStepper.minValue = 0.0
+        dtStepper.maxValue = 1.0
+        dtStepper.increment = 0.01
+        dtStepper.doubleValue = 0.0
+        dtStepper.valueWraps = false
+        dtStepper.target = self
+        dtStepper.action = #selector(quickDetailStepperChanged(_:))
+        cv.addSubview(dtStepper)
+        quickDetailStepper = dtStepper
 
         y -= 22
         let hueLabel = makeLabel("Hue:", x: panelX, y: y, width: 70)
@@ -1756,8 +1773,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
                 quickBrightnessLabel.stringValue = "1.00"
                 quickContrastSlider.doubleValue = 1.0
                 quickContrastLabel.stringValue = "1.00"
-                quickDetailSlider.doubleValue = 0.0
-                quickDetailLabel.stringValue = "0.00"
+                quickDetailStepper.doubleValue = 0.0
+                quickDetailField.stringValue = "0.00"
 
                 for ch in CurveChannel.allCases {
                     if let sliders = tonalEQSliders[ch.rawValue],
@@ -1805,8 +1822,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             quickBrightnessLabel.stringValue = "1.00"
             quickContrastSlider.doubleValue = 1.0
             quickContrastLabel.stringValue = "1.00"
-            quickDetailSlider.doubleValue = 0.0
-            quickDetailLabel.stringValue = "0.00"
+            quickDetailStepper.doubleValue = 0.0
+            quickDetailField.stringValue = "0.00"
         }
     }
 
@@ -2994,9 +3011,22 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         applyLUTIfPreviewOn()
     }
 
-    @objc func quickDetailChanged(_ sender: NSSlider) {
+    @objc func quickDetailStepperChanged(_ sender: NSStepper) {
         quickDetail = sender.doubleValue
-        quickDetailLabel.stringValue = String(format: "%.2f", quickDetail)
+        quickDetailField.stringValue = String(format: "%.2f", quickDetail)
+        applyDetailOverlay()
+    }
+
+    @objc func quickDetailFieldChanged(_ sender: NSTextField) {
+        if let val = Double(sender.stringValue) {
+            quickDetail = max(0, min(1, val))
+            quickDetailStepper.doubleValue = quickDetail
+            sender.stringValue = String(format: "%.2f", quickDetail)
+            applyDetailOverlay()
+        }
+    }
+
+    func applyDetailOverlay() {
         if quickDetail > 0.001 {
             startSharpeningOverlay()
         } else {
