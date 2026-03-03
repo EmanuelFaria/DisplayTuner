@@ -1059,9 +1059,13 @@ func getDisplayName(for displayID: CGDirectDisplayID, width: Int, height: Int) -
             }
         }
     }
-    // Fallback for known displays where NSScreen returns "Unknown"
+    // Fallback: use display ID to disambiguate
+    // ID=1 is typically the physical Cinema HD, higher IDs are BetterDisplay virtual
     if width == 2560 && height == 1600 { return "Cinema HD" }
-    if width == 3840 && height == 2400 { return "Cinema HD" }  // BetterDisplay virtual resolution
+    if (width == 3840 && height == 2400) || (width == 3200 && height == 2000) {
+        if displayID <= 2 { return "Cinema HD" }
+        return "Virtual Cinema HHD"
+    }
     return "\(width)x\(height)"
 }
 
@@ -1358,10 +1362,19 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         cv.addSubview(presetHeader)
 
         y -= 28
-        presetPopup = NSPopUpButton(frame: NSRect(x: panelX, y: y, width: panelW, height: 26))
+        presetPopup = NSPopUpButton(frame: NSRect(x: panelX, y: y, width: panelW - 30, height: 26))
         presetPopup.target = self
         presetPopup.action = #selector(presetPopupChanged(_:))
         cv.addSubview(presetPopup)
+
+        let folderBtn = NSButton(frame: NSRect(x: panelX + panelW - 26, y: y, width: 26, height: 26))
+        folderBtn.bezelStyle = .rounded
+        folderBtn.title = "📁"
+        folderBtn.toolTip = "Open Presets Folder"
+        folderBtn.target = self
+        folderBtn.action = #selector(openPresetsFolder(_:))
+        cv.addSubview(folderBtn)
+
         rebuildPresetDropdown()
 
         // --- Separator ---
@@ -1687,8 +1700,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             let h = CGDisplayPixelsHigh(did)
             let friendlyName = getDisplayName(for: did, width: w, height: h)
 
-            // Filter out BetterDisplay virtual screens
-            if friendlyName.contains("Virtual") { continue }
+            // Include virtual displays (needed for BetterDisplay mirror calibration)
 
             displayIDs.append(did)
             let isMain = CGDisplayIsMain(did) != 0
@@ -1723,8 +1735,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             let h = CGDisplayPixelsHigh(did)
             let friendlyName = getDisplayName(for: did, width: w, height: h)
 
-            // Filter out BetterDisplay virtual screens
-            if friendlyName.contains("Virtual") { continue }
+            // Include virtual displays (needed for BetterDisplay mirror calibration)
 
             referenceDisplayIDs.append(did)
             let isMain = CGDisplayIsMain(did) != 0
@@ -1899,10 +1910,6 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         browseItem.target = self
         presetPopup.menu?.addItem(browseItem)
 
-        let openFolderItem = NSMenuItem(title: "Open Presets Folder...", action: #selector(openPresetsFolder(_:)), keyEquivalent: "")
-        openFolderItem.target = self
-        presetPopup.menu?.addItem(openFolderItem)
-
         if selectIndex >= 0 {
             presetPopup.selectItem(at: selectIndex)
         } else if presets.isEmpty {
@@ -1936,7 +1943,7 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
             rebuildPresetDropdown()
             return
         }
-        if title == "Open Presets Folder..." {
+        if title == "Open Presets Folder..." {  // legacy — now a button
             openPresetsFolder(sender)
             rebuildPresetDropdown()
             return
