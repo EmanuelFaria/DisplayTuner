@@ -3018,8 +3018,8 @@ class DisplayTunerController: NSObject, NSWindowDelegate {
         let ciImage = CIImage(cgImage: cgImage)
         let filter = CIFilter(name: "CIUnsharpMask")!
         filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(quickDetail * 5.0, forKey: kCIInputIntensityKey)
-        filter.setValue(quickDetail * 3.0 + 0.5, forKey: kCIInputRadiusKey)
+        filter.setValue(quickDetail * 0.8, forKey: kCIInputIntensityKey)   // 0-0.8 (subtle to moderate)
+        filter.setValue(quickDetail * 1.5 + 0.3, forKey: kCIInputRadiusKey)  // 0.3-1.8 pixels
 
         guard let outputImage = filter.outputImage else { return }
         guard let sharpCG = sharpenContext.createCGImage(outputImage, from: ciImage.extent) else { return }
